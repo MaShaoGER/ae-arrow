@@ -1,0 +1,294 @@
+{
+  "name": "◆ 箭头样式 · 在此调整",
+  "matchName": "Pseudo/AEArrow0503-0503",
+  "indices": {
+    "width": 2,
+    "color": 3,
+    "dashed": 4,
+    "dash": 5,
+    "gap": 6,
+    "startType": 9,
+    "startWidth": 10,
+    "startProportional": 11,
+    "startLength": 12,
+    "startInset": 14,
+    "startThickness": 15,
+    "startVLength": 16,
+    "startSquareIndent": 17,
+    "startTailIndent": 18,
+    "endType": 22,
+    "endWidth": 23,
+    "endProportional": 24,
+    "endLength": 25,
+    "endInset": 27,
+    "endThickness": 28,
+    "endVLength": 29,
+    "endSquareIndent": 30,
+    "endTailIndent": 31
+  },
+  "controls": [
+    {
+      "type": "group",
+      "name": "线身"
+    },
+    {
+      "type": "slider",
+      "name": "粗细",
+      "default_value": 8,
+      "valid_min": 0,
+      "valid_max": 10000,
+      "slider_min": 0,
+      "slider_max": 300,
+      "precision": 1,
+      "pixel": true
+    },
+    {
+      "type": "color",
+      "name": "颜色",
+      "red": 51,
+      "green": 166,
+      "blue": 255
+    },
+    {
+      "type": "checkbox",
+      "name": "虚线",
+      "default_value": false
+    },
+    {
+      "type": "slider",
+      "name": "虚线长度",
+      "default_value": 24,
+      "valid_min": 0,
+      "valid_max": 10000,
+      "slider_min": 0,
+      "slider_max": 200,
+      "precision": 1,
+      "pixel": true
+    },
+    {
+      "type": "slider",
+      "name": "虚线间隔",
+      "default_value": 14,
+      "valid_min": 0,
+      "valid_max": 10000,
+      "slider_min": 0,
+      "slider_max": 200,
+      "precision": 1,
+      "pixel": true
+    },
+    {
+      "type": "endgroup",
+      "name": ""
+    },
+    {
+      "type": "group",
+      "name": "起点"
+    },
+    {
+      "type": "dropdown",
+      "name": "样式",
+      "content": "无|箭头|有刺|V 形|圆|方框|菱形|方形尾部|三角尾部|内半圆|外半圆",
+      "default_value": 1,
+      "hold": true
+    },
+    {
+      "type": "slider",
+      "name": "端点高度",
+      "default_value": 72,
+      "valid_min": 0,
+      "valid_max": 10000,
+      "slider_min": 0,
+      "slider_max": 600,
+      "precision": 1,
+      "pixel": true
+    },
+    {
+      "type": "checkbox",
+      "name": "成比例",
+      "default_value": true
+    },
+    {
+      "type": "slider",
+      "name": "长度 / 大小",
+      "default_value": 50,
+      "valid_min": 0,
+      "valid_max": 10000,
+      "slider_min": 0,
+      "slider_max": 200,
+      "precision": 1,
+      "percent": true
+    },
+    {
+      "type": "group",
+      "name": "按样式调整"
+    },
+    {
+      "type": "slider",
+      "name": "箭头 · 内偏移",
+      "default_value": 0,
+      "valid_min": 0,
+      "valid_max": 10000,
+      "slider_min": 0,
+      "slider_max": 100,
+      "precision": 1,
+      "percent": true
+    },
+    {
+      "type": "slider",
+      "name": "有刺 · 厚度",
+      "default_value": 10,
+      "valid_min": 0,
+      "valid_max": 10000,
+      "slider_min": 0,
+      "slider_max": 100,
+      "precision": 1,
+      "percent": true
+    },
+    {
+      "type": "slider",
+      "name": "V 形 · V 形长度",
+      "default_value": 50,
+      "valid_min": 0,
+      "valid_max": 10000,
+      "slider_min": 0,
+      "slider_max": 200,
+      "precision": 1,
+      "percent": true
+    },
+    {
+      "type": "slider",
+      "name": "方形尾部 · 缩进大小",
+      "default_value": 25,
+      "valid_min": 0,
+      "valid_max": 10000,
+      "slider_min": 0,
+      "slider_max": 100,
+      "precision": 1,
+      "percent": true
+    },
+    {
+      "type": "slider",
+      "name": "三角尾 / 内半圆缩进",
+      "default_value": 0,
+      "valid_min": 0,
+      "valid_max": 10000,
+      "slider_min": 0,
+      "slider_max": 100,
+      "precision": 1,
+      "percent": true
+    },
+    {
+      "type": "endgroup",
+      "name": ""
+    },
+    {
+      "type": "endgroup",
+      "name": ""
+    },
+    {
+      "type": "group",
+      "name": "终点"
+    },
+    {
+      "type": "dropdown",
+      "name": "样式",
+      "content": "无|箭头|有刺|V 形|圆|方框|菱形|方形尾部|三角尾部|内半圆|外半圆",
+      "default_value": 2,
+      "hold": true
+    },
+    {
+      "type": "slider",
+      "name": "端点高度",
+      "default_value": 72,
+      "valid_min": 0,
+      "valid_max": 10000,
+      "slider_min": 0,
+      "slider_max": 600,
+      "precision": 1,
+      "pixel": true
+    },
+    {
+      "type": "checkbox",
+      "name": "成比例",
+      "default_value": true
+    },
+    {
+      "type": "slider",
+      "name": "长度 / 大小",
+      "default_value": 50,
+      "valid_min": 0,
+      "valid_max": 10000,
+      "slider_min": 0,
+      "slider_max": 200,
+      "precision": 1,
+      "percent": true
+    },
+    {
+      "type": "group",
+      "name": "按样式调整"
+    },
+    {
+      "type": "slider",
+      "name": "箭头 · 内偏移",
+      "default_value": 0,
+      "valid_min": 0,
+      "valid_max": 10000,
+      "slider_min": 0,
+      "slider_max": 100,
+      "precision": 1,
+      "percent": true
+    },
+    {
+      "type": "slider",
+      "name": "有刺 · 厚度",
+      "default_value": 10,
+      "valid_min": 0,
+      "valid_max": 10000,
+      "slider_min": 0,
+      "slider_max": 100,
+      "precision": 1,
+      "percent": true
+    },
+    {
+      "type": "slider",
+      "name": "V 形 · V 形长度",
+      "default_value": 50,
+      "valid_min": 0,
+      "valid_max": 10000,
+      "slider_min": 0,
+      "slider_max": 200,
+      "precision": 1,
+      "percent": true
+    },
+    {
+      "type": "slider",
+      "name": "方形尾部 · 缩进大小",
+      "default_value": 25,
+      "valid_min": 0,
+      "valid_max": 10000,
+      "slider_min": 0,
+      "slider_max": 100,
+      "precision": 1,
+      "percent": true
+    },
+    {
+      "type": "slider",
+      "name": "三角尾 / 内半圆缩进",
+      "default_value": 0,
+      "valid_min": 0,
+      "valid_max": 10000,
+      "slider_min": 0,
+      "slider_max": 100,
+      "precision": 1,
+      "percent": true
+    },
+    {
+      "type": "endgroup",
+      "name": ""
+    },
+    {
+      "type": "endgroup",
+      "name": ""
+    }
+  ]
+}

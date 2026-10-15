@@ -1,0 +1,293 @@
+/* AE-only adapter. All writes are explicit, grouped and confined to owned content. */
+(function (A) {
+    var ROOT_NAME = "__AE_ARROW_V1__";
+    var TAG = /\[\[AE_ARROW_V1:([^\]]*)\]\]/g;
+    var ROOT = "ADBE Root Vectors Group", CONTENTS = "ADBE Vectors Group";
+    var GROUP = "ADBE Vector Group", PATH = "ADBE Vector Shape - Group";
+    var STROKE = "ADBE Vector Graphic - Stroke", FILL = "ADBE Vector Graphic - Fill";
+    var DASHES = "ADBE Vector Stroke Dashes", DASH = "ADBE Vector Stroke Dash 1", GAP = "ADBE Vector Stroke Gap 1";
+    var PARTS = ["Body", "Start", "End"];
+
+    function fail(message) { throw new Error(message); }
+    function comp() {
+        var item = app.project ? app.project.activeItem : null;
+        if (!(item instanceof CompItem)) { fail("请先打开一个合成。"); }
+        return item;
+    }
+    function selected() {
+        var item = comp(), layers = item.selectedLayers;
+        if (layers.length !== 1 || !(layers[0] instanceof ShapeLayer)) { fail("请只选中一个由 AE Arrow 创建的形状图层。"); }
+        return { comp: item, layer: layers[0], compId: item.id, layerId: layers[0].id };
+    }
+    function checkTarget(expected) {
+        var target = selected();
+        if (expected && (expected.compId !== target.compId || expected.layerId !== target.layerId)) {
+            fail("选中对象已改变，请重新读取后更新。");
+        }
+        if (target.layer.locked) { fail("图层已锁定，请先解锁。"); }
+        return target;
+    }
+    function findUnique(container, name, matchName) {
+        var found = null, i, property;
+        for (i = 1; i <= container.numProperties; i++) {
+            property = container.property(i);
+            if (property.name === name && (!matchName || property.matchName === matchName)) {
+                if (found) { fail("箭头内部出现重名分组，请重新创建箭头。"); }
+                found = property;
+            }
+        }
+        return found;
+    }
+    function owned(layer) { return findUnique(layer.property(ROOT), ROOT_NAME, GROUP); }
+    function groupContents(layer, name) {
+        var root = owned(layer), group;
+        if (!root) { fail("缺少工具管理分组，请新建箭头。"); }
+        group = findUnique(root.property(CONTENTS), name, GROUP);
+        if (!group) { fail("缺少 " + name + " 分组，请新建箭头。"); }
+        return group.property(CONTENTS);
+    }
+    function paint(layer, name, matchName) {
+        var property = groupContents(layer, name).property(matchName);
+        if (!property) { fail("内部绘制属性不完整，请新建箭头。"); }
+        return property;
+    }
+    function visibleProperty(container, matchName) {
+        var i, property;
+        /* AE enumerates hidden dash slots too; only enabled slots accept expressions. */
+        for (i = 1; i <= container.numProperties; i++) {
+            property = container.property(i);
+            if (property.matchName === matchName && property.canSetExpression) { return property; }
+        }
+        return null;
+    }
+    function metadata(layer) {
+        var comment = layer.comment || "", matches = [], match, data;
+        TAG.lastIndex = 0;
+        while ((match = TAG.exec(comment)) !== null) { matches.push(match); }
+        if (matches.length !== 1) { fail("没有有效的 AE Arrow 参数标记，请选中工具生成的箭头。"); }
+        try { data = A.Codec.parse(decodeURIComponent(matches[0][1])); }
+        catch (error) { fail("箭头参数标记损坏，请创建新箭头。\n" + error.message); }
+        if (!data || data.tool !== "ae-arrow" || data.schemaVersion !== 1 || typeof data.fingerprint !== "string") { fail("不支持此箭头元数据版本。"); }
+        data.params = A.Model.validate(data.params);
+        return { data: data, token: matches[0][0] };
+    }
+    function writeMetadata(layer, p) {
+        var comment = layer.comment || "", token;
+        var data = { tool: "ae-arrow", schemaVersion: 1, scriptVersion: A.version, params: p, fingerprint: fingerprint(owned(layer)) };
+        token = "[[AE_ARROW_V1:" + encodeURIComponent(A.Codec.stringify(data)) + "]]";
+        TAG.lastIndex = 0;
+        if (TAG.test(comment)) { TAG.lastIndex = 0; comment = comment.replace(TAG, token); }
+        else { comment += (comment.length ? "\n" : "") + token; }
+        layer.comment = comment;
+    }
+    function numeric(value) {
+        var result, i;
+        if (typeof value === "number") { return Math.round(value * 1000000) / 1000000; }
+        if (value instanceof Array) {
+            result = []; for (i = 0; i < value.length; i++) { result.push(numeric(value[i])); } return result;
+        }
+        return value;
+    }
+    function snapshot(property, checkAnimation) {
+        var result = { name: property.name, matchName: property.matchName }, i, value;
+        if (property.propertyType !== PropertyType.PROPERTY) {
+            result.children = [];
+            for (i = 1; i <= property.numProperties; i++) { result.children.push(snapshot(property.property(i), checkAnimation)); }
+        } else {
+            result.canSetExpression = property.canSetExpression;
+            result.keys = property.numKeys;
+            result.expression = property.canSetExpression ? property.expression : "";
+            result.expressionEnabled = property.canSetExpression ? property.expressionEnabled : false;
+            if (checkAnimation && (result.keys > 0 || result.expression !== "")) {
+                fail("箭头内部已有关键帧或表达式，本版不覆盖它们。请复制样式并创建新箭头。");
+            }
+            if (property.propertyValueType === PropertyValueType.SHAPE) {
+                value = property.value;
+                result.value = { vertices: numeric(value.vertices), inTangents: numeric(value.inTangents), outTangents: numeric(value.outTangents), closed: value.closed };
+            } else if (property.propertyValueType !== PropertyValueType.NO_VALUE && property.propertyValueType !== PropertyValueType.CUSTOM_VALUE) {
+                result.value = numeric(property.value);
+            }
+        }
+        return result;
+    }
+    function fingerprint(property, checkAnimation) {
+        if (!property) { return "missing"; }
+        var text = A.Codec.stringify(snapshot(property, checkAnimation)), hash = 5381, i;
+        for (i = 0; i < text.length; i++) { hash = ((hash << 5) + hash) ^ text.charCodeAt(i); }
+        return (hash >>> 0).toString(16) + ":" + text.length;
+    }
+    function same(a, b) {
+        return A.Codec.stringify(numeric(a)) === A.Codec.stringify(numeric(b));
+    }
+    function set(property, value) {
+        if (!property) { fail("AE 缺少所需的形状属性。"); }
+        if (!same(property.value, value)) { property.setValue(value); }
+    }
+    function asShape(data) {
+        var shape = new Shape();
+        shape.vertices = data.vertices; shape.inTangents = data.inTangents; shape.outTangents = data.outTangents; shape.closed = data.closed;
+        return shape;
+    }
+    function setShape(property, data) {
+        var value = property.value;
+        function pointsEqual(a, b) {
+            var i, j, tolerance;
+            if (a.length !== b.length) { return false; }
+            for (i = 0; i < a.length; i++) {
+                for (j = 0; j < 2; j++) {
+                    /* Accommodate host float storage without rewriting unchanged curves. */
+                    tolerance = 0.0001 + Math.max(Math.abs(a[i][j]), Math.abs(b[i][j])) * 0.0000001;
+                    if (Math.abs(a[i][j] - b[i][j]) > tolerance) { return false; }
+                }
+            }
+            return true;
+        }
+        if (value.closed !== data.closed || !pointsEqual(value.vertices, data.vertices) ||
+                !pointsEqual(value.inTangents, data.inTangents) || !pointsEqual(value.outTangents, data.outTangents)) {
+            property.setValue(asShape(data));
+        }
+    }
+    function initialize(layer) {
+        var root, rootIndex, contents, added, groupIndex, i;
+        root = layer.property(ROOT).addProperty(GROUP); root.name = ROOT_NAME; rootIndex = root.propertyIndex;
+        for (i = 0; i < PARTS.length; i++) {
+            /* Indexed groups invalidate descendant references after addProperty. Always reacquire. */
+            contents = layer.property(ROOT).property(rootIndex).property(CONTENTS);
+            added = contents.addProperty(GROUP); added.name = PARTS[i]; groupIndex = added.propertyIndex;
+            contents = layer.property(ROOT).property(rootIndex).property(CONTENTS).property(groupIndex).property(CONTENTS);
+            contents.addProperty(PATH).name = "Path";
+            contents = layer.property(ROOT).property(rootIndex).property(CONTENTS).property(groupIndex).property(CONTENTS);
+            contents.addProperty(STROKE).name = "Stroke";
+            contents = layer.property(ROOT).property(rootIndex).property(CONTENTS).property(groupIndex).property(CONTENTS);
+            contents.addProperty(FILL).name = "Fill";
+        }
+    }
+    function setDashes(layer, enabled, dash, gap) {
+        var group = paint(layer, "Body", STROKE).property(DASHES), item;
+        if (!group) { fail("AE 缺少虚线属性组。"); }
+        if (enabled) {
+            if (!visibleProperty(group, DASH)) {
+                if (!group.canAddProperty(DASH)) { fail("当前 AE 无法通过脚本添加虚线。"); }
+                group.addProperty(DASH);
+            }
+            group = paint(layer, "Body", STROKE).property(DASHES);
+            if (!visibleProperty(group, GAP)) {
+                if (!group.canAddProperty(GAP)) { fail("当前 AE 无法通过脚本添加虚线间隔。"); }
+                group.addProperty(GAP);
+            }
+            set(visibleProperty(paint(layer, "Body", STROKE).property(DASHES), DASH), dash);
+            set(visibleProperty(paint(layer, "Body", STROKE).property(DASHES), GAP), gap);
+        } else {
+            item = visibleProperty(group, GAP); if (item) { item.remove(); }
+            group = paint(layer, "Body", STROKE).property(DASHES);
+            item = visibleProperty(group, DASH); if (item) { item.remove(); }
+        }
+    }
+    function applyVisual(layer, plan, previous) {
+        var p = plan.params, q = previous ? previous.params : null;
+        var parts = [plan.body, plan.start, plan.end], oldParts = previous ? [previous.body, previous.start, previous.end] : null;
+        var colorChanged = !q || !same(p.color, q.color), widthChanged = !q || p.strokeWidth !== q.strokeWidth;
+        var i, name, cap, oldCap, contents, stroke, fill, pathChanged, strokeChanged, fillChanged, opacity, oldOpacity, fillOpacity, oldFillOpacity;
+        for (i = 0; i < PARTS.length; i++) {
+            name = PARTS[i];
+            cap = i === 0 ? (p.cap === "butt" ? 1 : (p.cap === "round" ? 2 : 3)) : 1;
+            oldCap = i === 0 && q ? (q.cap === "butt" ? 1 : (q.cap === "round" ? 2 : 3)) : 1;
+            opacity = parts[i].stroke && parts[i].visible ? 100 : 0;
+            oldOpacity = oldParts && oldParts[i].stroke && oldParts[i].visible ? 100 : 0;
+            fillOpacity = parts[i].fill && parts[i].visible ? 100 : 0;
+            oldFillOpacity = oldParts && oldParts[i].fill && oldParts[i].visible ? 100 : 0;
+            pathChanged = !previous || !same(parts[i].shape, oldParts[i].shape);
+            strokeChanged = !previous || colorChanged || widthChanged || cap !== oldCap || opacity !== oldOpacity;
+            fillChanged = !previous || colorChanged || fillOpacity !== oldFillOpacity;
+            if (!pathChanged && !strokeChanged && !fillChanged) { continue; }
+            /* No indexed-group mutations in this loop: these handles can be reused. */
+            contents = groupContents(layer, name);
+            if (pathChanged) { setShape(contents.property(PATH).property("ADBE Vector Shape"), parts[i].shape); }
+            if (strokeChanged) {
+                stroke = contents.property(STROKE);
+                if (colorChanged) { set(stroke.property("ADBE Vector Stroke Color"), p.color); }
+                if (widthChanged) { set(stroke.property("ADBE Vector Stroke Width"), p.strokeWidth); }
+                if (!previous || opacity !== oldOpacity) { set(stroke.property("ADBE Vector Stroke Opacity"), opacity); }
+                if (!previous || cap !== oldCap) { set(stroke.property("ADBE Vector Stroke Line Cap"), cap); }
+                if (!previous) { set(stroke.property("ADBE Vector Stroke Line Join"), 2); }
+            }
+            if (fillChanged) {
+                fill = contents.property(FILL);
+                if (colorChanged) { set(fill.property("ADBE Vector Fill Color"), p.color); }
+                if (!previous || fillOpacity !== oldFillOpacity) { set(fill.property("ADBE Vector Fill Opacity"), fillOpacity); }
+            }
+        }
+        if (!q || p.dashed !== q.dashed || (p.dashed && (p.dash !== q.dash || p.gap !== q.gap))) {
+            setDashes(layer, p.dashed, p.dash, p.gap);
+        }
+    }
+    function create(p) {
+        var item = comp(), plan = A.Geometry.generate(p), layer = null;
+        app.beginUndoGroup("AE Arrow — 创建箭头");
+        try {
+            layer = item.layers.addShape(); layer.name = "AE Arrow";
+            layer.property("ADBE Transform Group").property("ADBE Anchor Point").setValue([0, 0]);
+            layer.property("ADBE Transform Group").property("ADBE Position").setValue([item.width / 2, item.height / 2]);
+            initialize(layer); applyVisual(layer, plan); writeMetadata(layer, plan.params);
+            var i;
+            for (i = 1; i <= item.numLayers; i++) { if (item.layer(i).selected) { item.layer(i).selected = false; } }
+            layer.selected = true;
+            return { name: layer.name, warning: plan.warning, compId: item.id, layerId: layer.id };
+        } catch (error) {
+            if (layer) { try { layer.remove(); } catch (ignored) {} }
+            throw error;
+        } finally { app.endUndoGroup(); }
+    }
+    function read() {
+        var target = selected(), stored = metadata(target.layer), root = owned(target.layer);
+        return {
+            params: A.Model.clone(stored.data.params), name: target.layer.name,
+            modified: !root || fingerprint(root) !== stored.data.fingerprint,
+            compId: target.compId, layerId: target.layerId
+        };
+    }
+    function update(p, expected) {
+        var target = checkTarget(expected), stored = metadata(target.layer), root = owned(target.layer);
+        if (!root) { fail("管理分组已删除，请新建箭头。"); }
+        if (fingerprint(root, true) !== stored.data.fingerprint) {
+            fail("箭头内部路径或样式已被手动修改。本版保留这些改动；可读取原参数后创建新箭头。");
+        }
+        var plan = A.Geometry.generate(p), before = A.Geometry.generate(stored.data.params), oldComment = target.layer.comment;
+        app.beginUndoGroup("AE Arrow — 更新箭头");
+        try {
+            applyVisual(target.layer, plan, before); writeMetadata(target.layer, plan.params);
+            return { name: target.layer.name, warning: plan.warning, compId: target.compId, layerId: target.layerId };
+        } catch (error) {
+            var rollbackMessage = "";
+            try {
+                applyVisual(target.layer, before); target.layer.comment = oldComment;
+                if (fingerprint(owned(target.layer)) !== stored.data.fingerprint) { rollbackMessage = "\n恢复未能完整确认，请用 AE 撤销本次操作。"; }
+            } catch (rollbackError) { rollbackMessage = "\n恢复失败，请用 AE 撤销本次操作。"; }
+            fail("更新未完成：" + error.message + rollbackMessage);
+        } finally { app.endUndoGroup(); }
+    }
+    function exportPreset(p) {
+        var params = A.Model.validate(p), file = File.saveDialog("保存箭头预设", "JSON:*.json");
+        if (!file) { return false; }
+        if (!/\.json$/i.test(file.name)) { file = new File(file.fsName + ".json"); }
+        if (file.exists && !confirm("覆盖这个预设文件？\n" + file.fsName)) { return false; }
+        file.encoding = "UTF-8";
+        if (!file.open("w")) { fail("无法写入预设。请检查目录权限及 AE 的脚本文件访问设置。"); }
+        try {
+            if (!file.write(A.Codec.stringify({ tool: "ae-arrow-preset", schemaVersion: 1, params: params }))) { fail("预设写入失败。"); }
+        } finally { file.close(); }
+        return file.fsName;
+    }
+    function importPreset() {
+        var file = File.openDialog("打开箭头预设", "JSON:*.json", false), content, value;
+        if (!file) { return null; }
+        if (file.length > 262144) { fail("预设文件过大（最多 256 KB）。"); }
+        file.encoding = "UTF-8";
+        if (!file.open("r")) { fail("无法读取预设文件。"); }
+        try { content = file.read(); } finally { file.close(); }
+        value = A.Codec.parse(content);
+        if (!value || value.tool !== "ae-arrow-preset" || value.schemaVersion !== 1) { fail("这不是本工具支持的预设文件。"); }
+        return A.Model.validate(value.params);
+    }
+    A.Host = { create: create, read: read, update: update, selection: selected, exportPreset: exportPreset, importPreset: importPreset };
+}(Arrow));

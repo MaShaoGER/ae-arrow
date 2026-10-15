@@ -1,0 +1,27 @@
+/* Generated via scripts/build-pseudo.py; edit this template or the schema builder. */
+(function(A){
+    var title=__DISPLAY_NAME__,match=__MATCH_NAME__,indices=__INDICES__;
+    var binary=__BINARY__;
+    function find(layer){var es=layer.property('ADBE Effect Parade'),i;for(i=1;i<=es.numProperties;i++){if(es.property(i).matchName===match){return es.property(i);}}return A.LegacyPseudo.find(layer);}
+    function affinity(layer){var e=find(layer);return e&&e.matchName===match;}
+    function install(layer){
+        var c=layer.containingComp,selected=c.selectedLayers,i,file=new File(Folder.temp.fsName+'/AE-Arrow-0501.ffx'),before=layer.property('ADBE Effect Parade').numProperties;
+        try{
+            file.encoding='BINARY';if(!file.open('w')){throw new Error('无法写入箭头控件预设：'+file.error);}
+            try{if(!file.write(binary)){throw new Error('无法写入箭头控件预设。');}}finally{file.close();}
+            for(i=1;i<=c.numLayers;i++){c.layer(i).selected=false;}layer.selected=true;
+            layer.applyPreset(file);
+            var e=find(layer);if(!e){throw new Error('当前 AE 无法载入箭头伪效果控件。');}e.name=title;
+            return e;
+        }catch(error){
+            var es=layer.property('ADBE Effect Parade');while(es.numProperties>before){es.property(es.numProperties).remove();}throw error;
+        }finally{
+            for(i=1;i<=c.numLayers;i++){c.layer(i).selected=false;}for(i=0;i<selected.length;i++){try{selected[i].selected=true;}catch(ignore){}}
+        }
+    }
+    function property(layer,key){var e=find(layer);if(e&&!affinity(layer)){return A.LegacyPseudo.property(layer,key);}return e&&indices.hasOwnProperty(key)?e.property(indices[key]):null;}
+    function value(layer,key){if(!affinity(layer)){return A.LegacyPseudo.value(layer,key);}if(/Depth$/.test(key)){var end=key.substr(0,key.length-5),c=layer.containingComp;return Math.max(.001,(value(layer,end+'Proportional')?value(layer,end+'Width'):100)*value(layer,end+'Length')/100);}if(/Angle$/.test(key)){return 90;}if(key==='notch'){return 35;}var p=property(layer,key);return /Type$/.test(key)?p.value-1:p.value;}
+    function encodedValue(key,value){return /Type$/.test(key)?value+1:value;}
+    function ref(key,owner,layer){if(layer&&!affinity(layer)){return A.LegacyPseudo.ref(key,owner);}var r=(owner?owner+'.':'')+'effect('+A.Codec.stringify(title)+')('+indices[key]+')';return /Type$/.test(key)?'('+r+'-1)':r;}
+    A.Pseudo={find:find,affinity:affinity,install:install,property:property,value:value,encodedValue:encodedValue,ref:ref,indices:indices,matchName:match,title:title};
+}(Arrow));

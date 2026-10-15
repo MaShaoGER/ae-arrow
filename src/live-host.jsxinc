@@ -1,0 +1,351 @@
+/* Path-linked v2 adapter. Expressions own redraw; scripts only build and edit controls. */
+(function(A){
+    var ROOT="ADBE Root Vectors Group",CONTENTS="ADBE Vectors Group",GROUP="ADBE Vector Group",PATH="ADBE Vector Shape - Group",STROKE="ADBE Vector Graphic - Stroke",FILL="ADBE Vector Graphic - Fill";
+    var TAG=/\[\[AE_ARROW_LIVE_V2:([^\]]+)\]\]/,PARTS=["Body","Start","End"];
+    var names={width:"AA Width",startType:"AA Start Type",endType:"AA End Type",startLength:"AA Start Length",startWidth:"AA Start Width",startAngle:"AA Start Angle",endLength:"AA End Length",endWidth:"AA End Width",endAngle:"AA End Angle",startDepth:"AA Start Depth",endDepth:"AA End Depth",notch:"AA Notch",color:"AA Color",dashed:"AA Dashed",dash:"AA Dash",gap:"AA Gap"};
+    var affinityKeys=['startProportional','endProportional','startInset','endInset','startThickness','endThickness','startVLength','endVLength','startSquareIndent','endSquareIndent','startTailIndent','endTailIndent'];
+    function fail(s){throw new Error(s);}
+    function active(){var c=app.project?app.project.activeItem:null;if(!(c instanceof CompItem)){fail("请先打开合成，并选中钢笔绘制的路径属性。");}return c;}
+    function quote(s){return A.Codec.stringify(s);}
+    function unique(property){var parent=property.parentProperty,i,count=0;for(i=1;i<=parent.numProperties;i++){if(parent.property(i).name===property.name){count++;}}if(count!==1){fail("路径所在分组出现重名，请先重命名："+property.name);}}
+    function describe(layer,property){
+        var shape=property.value,wrappers=[],groups=[],p=property.parentProperty,i,chain="L",groupChain,transforms=[];
+        if(shape.closed){fail("请选择开放路径；闭合路径没有唯一的起点和终点。");}
+        if(shape.vertices.length<2||shape.vertices.length>256){fail("路径需包含 2–256 个顶点。");}
+        if(property.matchName==="ADBE Mask Shape"){
+            unique(p);return {path:"L.mask("+quote(p.name)+").maskPath",groups:[],label:p.name,kind:"mask"};
+        }
+        if(property.matchName!=="ADBE Vector Shape"){fail("请选择钢笔路径的“路径”属性，不是矩形/椭圆等参数化路径。");}
+        while(p&&p.matchName!==ROOT){if(p.matchName===GROUP||p.matchName===PATH){unique(p);wrappers.unshift(p);if(p.matchName===GROUP){groups.unshift(p);}}p=p.parentProperty;}
+        for(i=0;i<wrappers.length;i++){
+            chain+=".content("+quote(wrappers[i].name)+")";
+            if(wrappers[i].matchName===GROUP){
+                var skew=wrappers[i].property("ADBE Vector Transform Group").property("ADBE Vector Skew");
+                if(skew&&(skew.numKeys>0||skew.expression!==""||Math.abs(skew.value)>0.00001)){fail("本版尚不支持形状组斜切，请先将组斜切归零。");}
+                transforms.unshift(chain+".transform");
+            }
+        }
+        return {path:chain+".path",groups:transforms,label:wrappers[wrappers.length-1].name,kind:"shape"};
+    }
+    function selectedPath(){
+        var c=active(),layers=c.selectedLayers,i,j,p,found=[];
+        for(i=0;i<layers.length;i++){
+            var ps=layers[i].selectedProperties;
+            for(j=0;j<ps.length;j++){p=ps[j];if(p.propertyType===PropertyType.PROPERTY&&p.propertyValueType===PropertyValueType.SHAPE){found.push({layer:layers[i],property:p});}}
+        }
+        if(found.length!==1){fail("请在时间线中只选中一条开放的“路径”或“蒙版路径”属性。");}
+        return {comp:c,layer:found[0].layer,property:found[0].property,descriptor:describe(found[0].layer,found[0].property)};
+    }
+    function addEffect(layer,match,name,value){var effect=layer.property("ADBE Effect Parade").addProperty(match);effect.name=name;var index=effect.propertyIndex;if(value!==undefined){layer.property("ADBE Effect Parade").property(index).property(1).setValue(value);}return index;}
+    function effect(layer,key){if(A.Pseudo&&A.Pseudo.find(layer)&&(/Depth$/.test(key)||(A.Pseudo.affinity(layer)&&(/Angle$/.test(key)||key==='notch')))&&names.hasOwnProperty(key)){return {value:A.Pseudo.value(layer,key)};}var p=A.Pseudo?A.Pseudo.property(layer,key):null;if(p){return p;}var result=layer.property("ADBE Effect Parade").property(names[key]||key);if(!result){fail("箭头控制缺失："+key);}return result.property(1);}
+    function ref(layer,key,owner){return A.Pseudo&&layer&&A.Pseudo.find(layer)?A.Pseudo.ref(key,owner,layer):(owner?owner+'.':'')+"effect("+quote(names[key])+")(1)";}
+    function nativeControls(layer){var mode=info(layer).controls;return mode==="sliders"||mode==="pseudo";}
+    function sourceCoordinates(d,owner){
+        var lines=["var R="+(owner||"thisLayer")+";","var L=R.effect('AA Source')(1);","var P="+d.path+";","function xy(p){var x=p[0],y=p[1],T,a,s,r,c,z,v;"];
+        var i;for(i=0;i<d.groups.length;i++){
+            lines.push("T="+d.groups[i]+";a=T.anchorPoint;s=T.scale;r=T.rotation*Math.PI/180;x=(x-a[0])*s[0]/100;y=(y-a[1])*s[1]/100;c=Math.cos(r);z=Math.sin(r);v=x*c-y*z;y=x*z+y*c;x=v+T.position[0];y+=T.position[1];");
+        }
+        lines.push(d.space==='world'?"var v=R.fromWorld(L.toWorld([x,y,0]));return [v[0],v[1]];}":"var v=R.fromComp(L.toComp([x,y]));return [v[0],v[1]];}");return lines.join("\n");
+    }
+    function sourceHeader(d,owner,baseOnly){
+        var lines=[sourceCoordinates(d,owner)];
+        lines.push("var vs=P.points(),ins=P.inTangents(),outs=P.outTangents(),v=[],it=[],ot=[],i,a,b,c;",
+            "for(i=0;i<vs.length;i++){a=xy(vs[i]);b=xy([vs[i][0]+ins[i][0],vs[i][1]+ins[i][1]]);c=xy([vs[i][0]+outs[i][0],vs[i][1]+outs[i][1]]);v.push(a);it.push([b[0]-a[0],b[1]-a[1]]);ot.push([c[0]-a[0],c[1]-a[1]]);}");
+        /* Point frames read ONLY the untouched source. Editable children never feed their own parent. */
+        if(!baseOnly&&d.pointCount){lines.push("for(i=0;i<Math.min(v.length,"+d.pointCount+");i++){try{var C=R.effect('AA Point '+(i+1))(1);if(C&&C.effect('AA Owner')(1).index===R.index){var q="+(d.space==='world'?"R.fromWorld(C.toWorld(C.anchorPoint))":"R.fromComp(C.toComp(C.anchorPoint))")+";v[i]=[q[0],q[1]];}}catch(missingPoint){}}");}
+        lines.push("var M=("+A.LiveMathFactory.toString()+")();var path=M.build(v,it,ot);");
+        return lines.join("\n");
+    }
+    function parameters(layer){var isAffinity=A.Pseudo&&layer&&A.Pseudo.affinity(layer),keys=isAffinity?['width','startType','endType','startLength','startWidth','endLength','endWidth'].concat(affinityKeys):['width','startType','endType','startLength','startWidth','endLength','endWidth','startDepth','endDepth','notch'],parts=isAffinity?['affinity:true']:[],i,k,r;for(i=0;i<keys.length;i++){k=keys[i];r=ref(layer,k,'R');if(k==='startType'||k==='endType'){r='Math.max(0,Math.min('+(isAffinity?10:7)+',Math.round('+r+')))';}else if(k==='notch'){r='Math.max(0,Math.min(.85,'+r+'/100))';}else if(/Proportional$/.test(k)){r='('+r+'>0)';}else if(/Inset$|Thickness$|TailIndent$/.test(k)){r='Math.max(0,Math.min(100,'+r+'))';}else{r='Math.max(.001,'+r+')';}parts.push(k+':'+r);}return 'var p={'+parts.join(',')+'};';}
+    function root(layer){return layer.property(ROOT).property("__AE_ARROW_LIVE_V2__");}
+    function part(layer,name){return root(layer).property(CONTENTS).property(name).property(CONTENTS);}
+    function initialize(layer){
+        var r=layer.property(ROOT).addProperty(GROUP);r.name="__AE_ARROW_LIVE_V2__";var i,g,c;
+        for(i=0;i<PARTS.length;i++){
+            g=root(layer).property(CONTENTS).addProperty(GROUP);g.name=PARTS[i];
+            c=part(layer,PARTS[i]);c.addProperty(PATH).name="Path";
+            c=part(layer,PARTS[i]);c.addProperty(STROKE).name="Stroke";
+            c=part(layer,PARTS[i]);c.addProperty(FILL).name="Fill";
+        }
+    }
+    function expression(prop,text){try{prop.expression=text;}catch(error){fail("表达式安装失败（"+prop.name+" / "+prop.parentProperty.name+"）："+String(error));}if(prop.expressionError){fail("表达式安装失败（"+prop.name+"）："+prop.expressionError);}}
+    function wire(layer,d,rewireOnly){
+        var head=sourceHeader(d)+"\n"+parameters(layer)+"\nvar g=M.generate(path,p);",i,c,s,f,type;
+        for(i=0;i<PARTS.length;i++){
+            c=part(layer,PARTS[i]);expression(c.property(PATH).property("ADBE Vector Shape"),head+"\nvar q=g."+PARTS[i].toLowerCase()+";createPath(q.vertices,q.inTangents,q.outTangents,q.closed);");
+            s=c.property(STROKE);f=c.property(FILL);s.property("ADBE Vector Stroke Line Cap").setValue(1);s.property("ADBE Vector Stroke Line Join").setValue(2);
+            expression(s.property("ADBE Vector Stroke Color"),ref(layer,'color')+';');expression(f.property("ADBE Vector Fill Color"),ref(layer,'color')+';');
+            expression(s.property("ADBE Vector Stroke Width"),'Math.max(.5,'+ref(layer,'width')+');');
+            if(i===0){f.property("ADBE Vector Fill Opacity").setValue(0);}
+            else{
+                type='Math.round('+ref(layer,i===1?'startType':'endType')+')';
+                var af=A.Pseudo&&A.Pseudo.affinity(layer);
+                expression(s.property("ADBE Vector Stroke Opacity"),af?'0;':"var k="+type+";(k===2||k===3)?100:0;");
+                expression(f.property("ADBE Vector Fill Opacity"),af?"var k="+type+";k!==0?100:0;":"var k="+type+";(k!==0&&k!==2&&k!==3)?100:0;");
+            }
+        }
+        /* Dash slots are explicitly exposed before installing expressions; gap 0 produces a solid stroke. */
+        var dash=part(layer,"Body").property(STROKE).property("ADBE Vector Stroke Dashes");if(!rewireOnly){dash.addProperty("ADBE Vector Stroke Dash 1");}
+        dash=part(layer,"Body").property(STROKE).property("ADBE Vector Stroke Dashes");if(!rewireOnly){dash.addProperty("ADBE Vector Stroke Gap 1");}
+        dash=part(layer,"Body").property(STROKE).property("ADBE Vector Stroke Dashes");
+        expression(dash.property("ADBE Vector Stroke Dash 1"),ref(layer,'dashed')+'>0?Math.max(.5,'+ref(layer,'dash')+'):1000000;');
+        expression(dash.property("ADBE Vector Stroke Gap 1"),ref(layer,'dashed')+'>0?Math.max(.5,'+ref(layer,'gap')+'):0;');
+    }
+    function defaults(){var angle=2*Math.atan(30/72)*180/Math.PI;return {width:8,startType:0,endType:1,startLength:36,startWidth:30,startAngle:angle,endLength:36,endWidth:30,endAngle:angle,startDepth:36,endDepth:36,notch:35,color:[.2,.65,1,1],dashed:0,dash:24,gap:14};}
+    function affinityDefaults(){var p=defaults(),i,end;p.startLength=p.endLength=50;p.startWidth=p.endWidth=72;for(i=0;i<2;i++){end=i?'end':'start';p[end+'Proportional']=1;p[end+'Inset']=0;p[end+'Thickness']=10;p[end+'VLength']=50;p[end+'SquareIndent']=25;p[end+'TailIndent']=0;}return p;}
+    function organizeEffects(layer){var e=A.Pseudo&&A.Pseudo.find(layer);if(e&&e.propertyIndex!==layer.property('ADBE Effect Parade').numProperties){e.moveTo(layer.property('ADBE Effect Parade').numProperties);}}
+    function prepareControls(layer){var e=A.Pseudo&&A.Pseudo.find(layer);if(!e){return;}var changed=e.name!==A.Pseudo.title;if(changed||e.propertyIndex!==layer.property('ADBE Effect Parade').numProperties){app.beginUndoGroup('AE Arrow — 整理效果控件');try{e.name=A.Pseudo.title;organizeEffects(layer);if(changed){wire(layer,info(layer).descriptor,true);}}finally{app.endUndoGroup();}}}
+    function transform(layer,name){return layer.property("ADBE Transform Group").property(name);}
+    function dimensions(layer,x,y,z){return layer.threeDLayer?[x,y,z]:[x,y];}
+    function spatialSource(layer){var p=layer;while(p){if(p.threeDLayer){return true;}p=p.parent;}return false;}
+    function controller(layer,key){return layer.containingComp.layer(effect(layer,"AA Handle "+key).value);}
+    function frameLayer(owner,d,fraction,label,created){
+        var layer=owner.containingComp.layers.addNull();created.push(layer);layer.name="AA Frame "+label;layer.parent=owner;
+        transform(layer,"ADBE Anchor Point").setValue([0,0]);transform(layer,"ADBE Position").setValue([0,0]);
+        addEffect(layer,"ADBE Layer Control","AA Owner",owner.index);
+        var header=sourceHeader(d,"effect('AA Owner')(1)")+"\nvar f=M.frame(path,"+fraction+");";
+        expression(transform(layer,"ADBE Position"),header+"\nf.point;");
+        expression(transform(layer,"ADBE Rotate Z"),header+"\nMath.atan2(f.tangent[1],f.tangent[0])*180/Math.PI;");
+        layer.enabled=false;layer.shy=true;layer.guideLayer=true;layer.locked=true;return layer;
+    }
+    function handle(owner,parent,key,label,x,y,axis,created){
+        var layer=owner.containingComp.layers.addNull();created.push(layer);layer.name="箭头点 · "+label;layer.parent=parent;layer.label=1;layer.guideLayer=true;
+        transform(layer,"ADBE Anchor Point").setValue([50,50]);transform(layer,"ADBE Position").setValue([x,y]);transform(layer,"ADBE Scale").setValue([18,18]);
+        var pos=transform(layer,"ADBE Position");pos.dimensionsSeparated=true;
+        addEffect(layer,"ADBE Layer Control","AA Owner",owner.index);
+        if(axis==="body"){expression(transform(layer,"ADBE Position_0"),"0;");}
+        else{expression(transform(layer,"ADBE Position_1"),"var R=effect('AA Owner')(1);"+(axis==="join"?"R.effect('AA Width')(1)/2;":"R.effect('AA "+(key.indexOf("start")===0?"Start":"End")+" Width')(1)/2;"));}
+        addEffect(owner,"ADBE Layer Control","AA Handle "+key,layer.index);return layer;
+    }
+    function installHandles(owner,d,created){
+        var middle=frameLayer(owner,d,.5,"Body",created),start=frameLayer(owner,d,0,"Start",created),end=frameLayer(owner,d,1,"End",created);
+        handle(owner,middle,"width","线身粗细（上下）",0,-4,"body",created);
+        handle(owner,start,"startLength","起点连接位置（左右）",36,4,"join",created);
+        handle(owner,start,"startDepth","起点头尖夹角（左右）",36,15,"angle",created);
+        handle(owner,end,"endLength","终点连接位置（左右）",-36,4,"join",created);
+        handle(owner,end,"endDepth","终点头尖夹角（左右）",-36,15,"angle",created);
+        var keys=["width","startLength","startDepth","endLength","endDepth"],i,key;
+        for(i=0;i<keys.length;i++){key=keys[i];expression(effect(owner,key),"Math.max(.5,Math.abs(effect('AA Handle "+key+"')(1).transform."+(key==="width"?"yPosition)*2);":"xPosition));"));}
+        addEffect(owner,"ADBE Slider Control","AA Start Angle",0);addEffect(owner,"ADBE Slider Control","AA End Angle",0);
+        expression(effect(owner,"AA Start Angle"),"2*Math.atan(effect('AA Start Width')(1)/(2*effect('AA Start Depth')(1)))*180/Math.PI;");
+        expression(effect(owner,"AA End Angle"),"2*Math.atan(effect('AA End Width')(1)/(2*effect('AA End Depth')(1)))*180/Math.PI;");
+    }
+    function installSliders(owner){
+        if(A.Pseudo&&A.Pseudo.find(owner)){return;}
+        var ends=["Start","End"],i;
+        for(i=0;i<ends.length;i++){
+            var end=ends[i].toLowerCase();expression(effect(owner,end+'Depth'),depthExpression(owner,end));
+        }
+    }
+    function depthExpression(owner,end){return 'var a=Math.max(5,Math.min(170,'+ref(owner,end+'Angle')+'));Math.max(.5,'+ref(owner,end+'Width')+'/(2*Math.tan(a*Math.PI/360)));';}
+    function pointController(owner,index){
+        var e=owner.property("ADBE Effect Parade").property("AA Point "+(index+1)),h,binding;
+        if(!e||e.property(1).value<=0){return null;}
+        h=owner.containingComp.layer(e.property(1).value);binding=h.property('ADBE Effect Parade').property('AA Owner');
+        /* A deleted Layer Control can retain a numeric index now occupied by a different layer. */
+        return binding&&binding.property(1).value===owner.index?h:null;
+    }
+    function installPoints(owner,d,count,created){
+        var i,j,h,frame,e,frameTag;
+        for(i=0;i<count;i++){
+            h=pointController(owner,i);if(h){continue;}
+            if(d.pointMode==='single'){
+                h=owner.containingComp.layers.addNull();created.push(h);h.name="路径点 · "+(i+1);h.threeDLayer=owner.threeDLayer;h.parent=owner;h.label=10;h.guideLayer=true;
+                transform(h,"ADBE Position").dimensionsSeparated=false;
+                transform(h,"ADBE Anchor Point").setValue(dimensions(h,50,50,0));transform(h,"ADBE Position").setValue(dimensions(h,0,0,0));transform(h,"ADBE Scale").setValue(dimensions(h,35,35,100));
+                addEffect(h,"ADBE Layer Control","AA Owner",owner.index);expression(transform(h,'ADBE Position'),pointExpression(d,i));
+                e=owner.property("ADBE Effect Parade").property("AA Point "+(i+1));
+                if(e){e.property(1).setValue(h.index);}else{addEffect(owner,"ADBE Layer Control","AA Point "+(i+1),h.index);}continue;
+            }
+            frame=null;frameTag="[[AE_ARROW_POINT_FRAME:"+owner.id+":"+i+"]]";
+            for(j=1;j<=owner.containingComp.numLayers;j++){if(owner.containingComp.layer(j).comment===frameTag){frame=owner.containingComp.layer(j);break;}}
+            if(!frame){frame=owner.containingComp.layers.addNull();created.push(frame);frame.name="AA Frame Path "+(i+1);frame.comment=frameTag;frame.threeDLayer=owner.threeDLayer;frame.parent=owner;
+                transform(frame,"ADBE Position").dimensionsSeparated=false;
+                transform(frame,"ADBE Anchor Point").setValue(dimensions(frame,0,0,0));addEffect(frame,"ADBE Layer Control","AA Owner",owner.index);
+                expression(transform(frame,"ADBE Position"),sourceCoordinates(d,"effect('AA Owner')(1)")+"\nvar vs=P.points(),p=xy(vs[Math.min("+i+",vs.length-1)]);"+(d.space==='world'?"[p[0],p[1],0];":"p;"));
+                frame.enabled=false;frame.shy=true;frame.guideLayer=true;frame.locked=true;
+            }
+            h=owner.containingComp.layers.addNull();created.push(h);h.name="路径点 · "+(i+1);h.threeDLayer=owner.threeDLayer;h.parent=frame;h.label=10;h.guideLayer=true;
+            transform(h,"ADBE Position").dimensionsSeparated=false;
+            transform(h,"ADBE Anchor Point").setValue(dimensions(h,50,50,0));transform(h,"ADBE Position").setValue(dimensions(h,0,0,0));transform(h,"ADBE Scale").setValue(dimensions(h,35,35,100));
+            addEffect(h,"ADBE Layer Control","AA Owner",owner.index);
+            e=owner.property("ADBE Effect Parade").property("AA Point "+(i+1));
+            if(e){e.property(1).setValue(h.index);}else{addEffect(owner,"ADBE Layer Control","AA Point "+(i+1),h.index);}
+        }
+        d.pointCount=Math.max(d.pointCount||0,count);
+    }
+    function pointExpression(d,index){return sourceCoordinates(d,"effect('AA Owner')(1)")+"\nvar vs=P.points(),p=xy(vs[Math.min("+index+",vs.length-1)]);[p[0]+value[0],p[1]+value[1]"+(d.space==='world'?",0":"")+"];";}
+    function saveInfo(layer,data){layer.comment="[[AE_ARROW_LIVE_V2:"+encodeURIComponent(A.Codec.stringify(data))+"]]";}
+    function create(options){
+        var source=selectedPath(),layer=null,created=[],sources=[],p=defaults(),key,sourceEnabled=source.layer.enabled,source3D=source.layer.threeDLayer;
+        app.beginUndoGroup("AE Arrow Live — 绑定路径");
+        try{
+            layer=source.comp.layers.addShape();created.push(layer);layer.name="AE Arrow Live";layer.property("ADBE Transform Group").property("ADBE Position").setValue([0,0]);
+            if((options&&options.threeD)||spatialSource(source.layer)){
+                source.layer.threeDLayer=true;layer.threeDLayer=true;layer.setParentWithJump(source.layer);
+                transform(layer,'ADBE Anchor Point').setValue([0,0,0]);transform(layer,'ADBE Position').setValue([0,0,0]);
+                source.descriptor.space='world';
+            }
+            addEffect(layer,"ADBE Layer Control","AA Source",source.layer.index);
+            var mode=options&&options.controls==='sliders'?'sliders':'pseudo';
+            if(mode==='pseudo'){if(options&&options.controls==='legacyPseudo'){A.LegacyPseudo.install(layer);}else{p=affinityDefaults();A.Pseudo.install(layer);}var schema=A.Pseudo.affinity(layer)?A.Pseudo.indices:A.LegacyPseudo.indices;for(key in schema){if(schema.hasOwnProperty(key)){effect(layer,key).setValue(A.Pseudo.encodedValue(key,p[key]));}}}
+            else{for(key in names){if(names.hasOwnProperty(key)){addEffect(layer,key==="color"?"ADBE Color Control":(key==="dashed"?"ADBE Checkbox Control":"ADBE Slider Control"),names[key],p[key]);}}}
+            source.descriptor.pointMode=options&&options.pointMode==='pairs'?'pairs':'single';
+            initialize(layer);installSliders(layer);installPoints(layer,source.descriptor,source.property.value.vertices.length,created);organizeEffects(layer);wire(layer,source.descriptor);
+            saveInfo(layer,{tool:"ae-arrow",version:4,mode:"path-live",controls:mode,descriptor:source.descriptor,sourceLayerId:source.layer.id});
+            if(!options||options.hideSource!==false){source.layer.enabled=false;}
+            selectOnly(source.comp,[layer]);
+            return readLayer(layer,source.comp);
+        }catch(error){var n;for(n=created.length-1;n>=0;n--){try{if(created[n].source){sources.push(created[n].source);}created[n].locked=false;created[n].remove();}catch(ignored){}}for(n=sources.length-1;n>=0;n--){try{if(sources[n].usedIn.length===0){sources[n].remove();}}catch(ignoredSource){}}source.layer.enabled=sourceEnabled;source.layer.threeDLayer=source3D;throw error;}
+        finally{app.endUndoGroup();}
+    }
+    function info(layer){var m=TAG.exec(layer.comment||"");if(!m){fail("请选择实时路径箭头；旧版静态箭头需要从路径重新创建。");}return A.Codec.parse(decodeURIComponent(m[1]));}
+    function readLayer(layer,c){var data=info(layer),p={},key;for(key in names){if(names.hasOwnProperty(key)){p[key]=A.Pseudo&&A.Pseudo.find(layer)?A.Pseudo.value(layer,key):effect(layer,key).value;}}var af=A.Pseudo&&A.Pseudo.affinity(layer),n;if(af){for(n=0;n<affinityKeys.length;n++){key=affinityKeys[n];p[key]=A.Pseudo.value(layer,key);}}
+        if(data.controls!=='sliders'&&data.controls!=='pseudo'){
+            /* Legacy effect expressions can retain a stale value after editing/removing a handle key. Read the authoritative handle streams for migration. */
+            var keys=['width','startLength','startDepth','endLength','endDepth'],i,axis;
+            for(i=0;i<keys.length;i++){key=keys[i];axis=key==='width'?'ADBE Position_1':'ADBE Position_0';p[key]=Math.max(.5,Math.abs(transform(controller(layer,key),axis).value)*(key==='width'?2:1));}
+            p.startAngle=2*Math.atan(p.startWidth/(2*p.startDepth))*180/Math.PI;p.endAngle=2*Math.atan(p.endWidth/(2*p.endDepth))*180/Math.PI;
+        }
+        return {compId:c.id,layerId:layer.id,name:layer.name,params:p,threeD:data.descriptor.space==='world',affinity:!!af,controls:data.controls||"handles",pointMode:data.descriptor.pointMode||'pairs',pointCount:Math.min(data.descriptor.pointCount||0,sourceProperty(layer).value.vertices.length)};}
+    function read(){var c=active();if(c.selectedLayers.length!==1){fail("请选择一个实时箭头图层，或它的单个路径点空对象。");}var layer=c.selectedLayers[0],e;if(!TAG.test(layer.comment||"")){e=layer.property("ADBE Effect Parade").property("AA Owner");if(e&&e.property(1).value>0){layer=c.layer(e.property(1).value);}}info(layer);prepareControls(layer);return readLayer(layer,c);}
+    function resolve(target){var c=active(),i;if(!target||c.id!==target.compId){fail("请先读取当前合成中的实时箭头。");}for(i=1;i<=c.numLayers;i++){if(c.layer(i).id===target.layerId){info(c.layer(i));return c.layer(i);}}fail("箭头已删除，请重新读取。");}
+    function set(target,key,value){
+        var layer=resolve(target);if(layer.locked){fail("箭头图层已锁定。");}if(!names.hasOwnProperty(key)&&!(A.Pseudo&&A.Pseudo.affinity(layer)&&A.Pseudo.indices.hasOwnProperty(key))){fail("未知参数。");}
+        if(A.Pseudo&&A.Pseudo.affinity(layer)&&(/Depth$|Angle$/.test(key)||key==='notch')){fail('新版使用长度 / 大小与按样式调整参数，请在效果控件中编辑。');}
+        if(key!=="color"&&(typeof value!=="number"||!isFinite(value))){fail("请输入有效数字。");}
+        var prop=effect(layer,key),nativeSliders=nativeControls(layer);
+        if(nativeSliders&&(key==="startDepth"||key==="endDepth")){return setAngle(target,key.substr(0,key.length-5),2*Math.atan(effect(layer,key.substr(0,key.length-5)+"Width").value/(2*Math.max(.5,value)))*180/Math.PI);}
+        if(!nativeSliders&&(key==="width"||key==="startLength"||key==="startDepth"||key==="endLength"||key==="endDepth")){
+            prop=transform(controller(layer,key),key==="width"?"ADBE Position_1":"ADBE Position_0");
+            if(key==='width'){value=-value/2;}else if(key.indexOf('end')===0){value=-value;}
+        }
+        if(prop.numKeys||prop.expression!==""){fail("该控制已有动画；请在 AE 控件中编辑关键帧。");}
+        app.beginUndoGroup("AE Arrow Live — 调整 "+key);try{prop.setValue(A.Pseudo&&A.Pseudo.find(layer)?A.Pseudo.encodedValue(key,value):value);}finally{app.endUndoGroup();}
+    }
+    function setAngle(target,end,angle){var layer=resolve(target);if(end!=="start"&&end!=="end"){fail("未知端点。");}if(typeof angle!=="number"||!isFinite(angle)){fail("请输入有效角度。");}angle=Math.max(5,Math.min(170,angle));if(nativeControls(layer)){set(target,end+"Angle",angle);}else{var height=effect(layer,end+"Width").value;set(target,end+"Depth",height/(2*Math.tan(angle*Math.PI/360)));}}
+    function showHandles(target){var layer=resolve(target),c=active(),keys=["width"],i;
+        if(nativeControls(layer)){return showPoints(target);}
+        if(effect(layer,"startType").value>0){keys.push("startLength");keys.push("startDepth");}
+        if(effect(layer,"endType").value>0){keys.push("endLength");keys.push("endDepth");}
+        for(i=1;i<=c.numLayers;i++){c.layer(i).selected=false;}for(i=0;i<keys.length;i++){controller(layer,keys[i]).selected=true;}
+    }
+    function selectHandle(target,key){var layer=resolve(target),c=active(),i,h=controller(layer,key);for(i=1;i<=c.numLayers;i++){c.layer(i).selected=false;}h.selected=true;}
+    function sourceProperty(layer){var source=layer.containingComp.layer(effect(layer,"AA Source").value),d=info(layer).descriptor,i;
+        var p;if(d.kind==="mask"){p=source.property("ADBE Mask Parade").property(d.label).property("ADBE Mask Shape");}
+        else{var wrappers=d.path.match(/\.content\(("(?:[^"\\]|\\.)*")\)/g),container=source.property(ROOT);for(i=0;i<wrappers.length;i++){var name=A.Codec.parse(wrappers[i].substring(9,wrappers[i].length-1));p=container.property(name);if(p.matchName===GROUP){container=p.property(CONTENTS);}}p=p.property("ADBE Vector Shape");}return p;
+    }
+    function selectOnly(c,layers){var i,props=c.selectedProperties;for(i=0;i<props.length;i++){props[i].selected=false;}for(i=1;i<=c.numLayers;i++){c.layer(i).selected=false;}for(i=0;i<layers.length;i++){layers[i].selected=true;}}
+    function sourceLabel(target){var layer=resolve(target),p=sourceProperty(layer),parts=[p.name],g=p.parentProperty;while(g&&g.parentProperty){parts.unshift(g.name);g=g.parentProperty;}parts.unshift(layer.containingComp.layer(effect(layer,'AA Source').value).name);return parts.join(' → ');}
+    function editSource(target){var layer=resolve(target),c=layer.containingComp,p=sourceProperty(layer),source=c.layer(effect(layer,'AA Source').value);c.openInViewer();selectOnly(c,[source]);p.selected=true;
+        /* Property selection is supported; timeline twirl/scroll is not exposed.
+           Do not temporarily replace the user's expression to fake UI expansion. */
+        return {layer:source.name,path:info(layer).descriptor.label};
+    }
+    function selectArrow(target){var layer=resolve(target);selectOnly(layer.containingComp,[layer]);return layer;}
+    function showPoints(target,index){
+        var layer=resolve(target),data=info(layer),count=Math.min(sourceProperty(layer).value.vertices.length,data.descriptor.pointCount||0),layers=[],i,h;
+        if(!count){fail("请先点击“生成 / 补齐路径点”。");}
+        for(i=0;i<count;i++){if(index!==undefined&&index!==i){continue;}h=pointController(layer,i);if(h){layers.push(h);}}
+        if(!layers.length){fail("路径点空对象已删除，请点击“生成 / 补齐路径点”修复。");}selectOnly(layer.containingComp,layers);
+    }
+    function syncPoints(target){
+        var layer=resolve(target),data=info(layer),oldDescriptor=A.Codec.parse(A.Codec.stringify(data.descriptor)),source=layer.containingComp.layer(effect(layer,"AA Source").value),p=sourceProperty(layer),created=[],oldEffects=layer.property("ADBE Effect Parade").numProperties;
+        if(layer.locked){fail("箭头图层已锁定。");}describe(source,p);
+        app.beginUndoGroup("AE Arrow Live — 补齐路径点");
+        try{installPoints(layer,data.descriptor,p.value.vertices.length,created);wire(layer,data.descriptor,true);saveInfo(layer,data);organizeEffects(layer);return readLayer(layer,layer.containingComp);}
+        catch(error){var n,footage=[];for(n=created.length-1;n>=0;n--){try{if(created[n].source){footage.push(created[n].source);}created[n].locked=false;created[n].remove();}catch(ignored){}}for(n=footage.length-1;n>=0;n--){try{if(!footage[n].usedIn.length){footage[n].remove();}}catch(ignoredFootage){}}while(layer.property("ADBE Effect Parade").numProperties>oldEffects){layer.property("ADBE Effect Parade").property(layer.property("ADBE Effect Parade").numProperties).remove();}try{wire(layer,oldDescriptor,true);}catch(ignoredWire){}throw error;}
+        finally{app.endUndoGroup();}
+    }
+    function upgradeSliders(target){
+        var layer=resolve(target),data=info(layer);if(nativeControls(layer)){return readLayer(layer,layer.containingComp);}if(layer.locked){fail("箭头图层已锁定。");}
+        var keys=["width","startLength","startDepth","endLength","endDepth"],p=readLayer(layer,layer.containingComp).params,i,h,prop;
+        for(i=0;i<keys.length;i++){h=controller(layer,keys[i]);prop=transform(h,keys[i]==="width"?"ADBE Position_1":"ADBE Position_0");if(prop.numKeys||prop.expression!==""||effect(layer,keys[i]).numKeys){fail("旧版样式点已有动画或表达式，保留原控制；请新建箭头使用直接滑块。");}}
+        if(effect(layer,"startAngle").numKeys||effect(layer,"endAngle").numKeys){fail("旧版角度已有动画，保留原控制；请新建箭头使用直接滑块。");}
+        if(effect(layer,"startWidth").numKeys||effect(layer,"endWidth").numKeys||effect(layer,"startWidth").expression!==""||effect(layer,"endWidth").expression!==""){fail("旧版头部高度已有动画，保留原控制；请新建箭头使用直接滑块。");}
+        app.beginUndoGroup("AE Arrow Live — 转为滑块");
+        try{for(i=0;i<keys.length;i++){prop=effect(layer,keys[i]);prop.expression="";prop.setValue(p[keys[i]]);h=controller(layer,keys[i]);h.enabled=false;h.shy=true;h.selected=false;}
+            prop=effect(layer,"startAngle");prop.expression="";prop.setValue(p.startAngle);prop=effect(layer,"endAngle");prop.expression="";prop.setValue(p.endAngle);
+            installSliders(layer);data.controls="sliders";data.version=3;saveInfo(layer,data);return readLayer(layer,layer.containingComp);
+        }finally{app.endUndoGroup();}
+    }
+    function upgradePseudo(target){
+        var layer=resolve(target),data=info(layer),key,prop,p,e;
+        if(data.controls==='pseudo'){return readLayer(layer,layer.containingComp);}if(layer.locked){fail('箭头图层已锁定。');}
+        if(data.controls!=='sliders'){fail('请先将旧版样式点转为滑块，再转换伪效果。');}
+        for(key in names){if(names.hasOwnProperty(key)){
+            prop=effect(layer,key);
+            var allowed=key==='startDepth'||key==='endDepth',end=key.substr(0,key.length-5),oldDepth="var a=Math.max(5,Math.min(170,effect('AA "+(end==='start'?'Start':'End')+" Angle')(1)));Math.max(.5,effect('AA "+(end==='start'?'Start':'End')+" Width')(1)/(2*Math.tan(a*Math.PI/360)));";
+            if(prop.numKeys||(prop.expression!==''&&!(allowed&&(prop.expression===depthExpression(layer,end)||prop.expression===oldDepth)))){fail('样式参数已有动画或自定义表达式，保留原控件；请新建箭头使用伪效果。');}
+        }}
+        p=readLayer(layer,layer.containingComp).params;
+        app.beginUndoGroup('AE Arrow Live — 转为伪效果');
+        try{
+            A.LegacyPseudo.install(layer);for(key in names){if(names.hasOwnProperty(key)&&!/Depth$/.test(key)){effect(layer,key).setValue(A.Pseudo.encodedValue(key,p[key]));}}
+            installSliders(layer);wire(layer,data.descriptor,true);
+            data.controls='pseudo';data.version=4;saveInfo(layer,data);
+            for(key in names){if(names.hasOwnProperty(key)){e=layer.property('ADBE Effect Parade').property(names[key]);if(e){e.remove();}}}
+            organizeEffects(layer);return readLayer(layer,layer.containingComp);
+        }catch(error){
+            e=A.Pseudo.find(layer);if(e){e.remove();}
+            data.controls='sliders';saveInfo(layer,data);try{wire(layer,data.descriptor,true);}catch(ignore){}throw error;
+        }finally{app.endUndoGroup();}
+    }
+    function upgradeAffinity(target){
+        var layer=resolve(target),data=info(layer),old=A.Pseudo.find(layer),p,key,prop,e=null,committed=false;
+        if(A.Pseudo.affinity(layer)){return readLayer(layer,layer.containingComp);}if(layer.locked){fail('箭头图层已锁定。');}
+        if(!old){fail('请先转为伪效果，再采用 Affinity 端点。');}
+        for(key in A.LegacyPseudo.indices){if(A.LegacyPseudo.indices.hasOwnProperty(key)){prop=A.LegacyPseudo.property(layer,key);if(prop.numKeys||prop.expression!==''){fail('旧样式已有动画或表达式，请保留旧箭头，或从源路径新建 Affinity 箭头。');}}}
+        var previous=readLayer(layer,layer.containingComp).params;p=affinityDefaults();
+        var shared=['width','color','dashed','dash','gap'],i,end,map=[0,1,1,2,1,4,5,6];for(i=0;i<shared.length;i++){key=shared[i];p[key]=previous[key];}
+        for(i=0;i<2;i++){end=i?'end':'start';p[end+'Type']=map[Math.max(0,Math.min(7,Math.round(previous[end+'Type'])))];p[end+'Width']=previous[end+'Width'];p[end+'Length']=100*previous[end+'Depth']/Math.max(.001,previous[end+'Width']);if(previous[end+'Type']===4){p[end+'Inset']=previous.notch;}}
+        app.beginUndoGroup('AE Arrow — 采用 Affinity 端点');
+        try{
+            /* Both schemas normally share the prominent title. Give the old effect a
+               temporary unique name so AE expressions resolve the new parameter types. */
+            old.name='AA Legacy Style (conversion)';
+            e=A.Pseudo.install(layer);for(key in A.Pseudo.indices){if(A.Pseudo.indices.hasOwnProperty(key)){effect(layer,key).setValue(A.Pseudo.encodedValue(key,p[key]));}}
+            wire(layer,data.descriptor,true);old=A.LegacyPseudo.find(layer);old.remove();committed=true;organizeEffects(layer);return readLayer(layer,layer.containingComp);
+        }catch(error){if(!committed){e=A.Pseudo.find(layer);if(e&&e.matchName===A.Pseudo.matchName){e.remove();}old=A.LegacyPseudo.find(layer);if(old){old.name=A.Pseudo.title;}try{wire(layer,data.descriptor,true);}catch(ignoreRollback){}}throw error;}
+        finally{app.endUndoGroup();}
+    }
+    function compactPoints(target){
+        var layer=resolve(target),data=info(layer),count=data.descriptor.pointCount||0,c=layer.containingComp,i,h,frame,pos,items=[],frames=[],footage=[],applied=[],committed=false;
+        if(layer.locked){fail('箭头图层已锁定。');}
+        for(i=0;i<count;i++){
+            h=pointController(layer,i);if(!h){continue;}if(h.parent&&h.parent.id===layer.id){continue;}
+            frame=h.parent;pos=transform(h,'ADBE Position');
+            if(h.locked||!frame||frame.comment!=='[[AE_ARROW_POINT_FRAME:'+layer.id+':'+i+']]'||pos.dimensionsSeparated||pos.expression!==''){
+                fail('路径点 '+(i+1)+' 的父级、位置表达式或维度已修改，保留原结构。');
+            }
+            var framePos=transform(frame,'ADBE Position'),expected=sourceCoordinates(data.descriptor,"effect('AA Owner')(1)")+"\nvar vs=P.points(),p=xy(vs[Math.min("+i+",vs.length-1)]);"+(data.descriptor.space==='world'?"[p[0],p[1],0];":"p;"),oldExpected=sourceCoordinates(data.descriptor,"effect('AA Owner')(1)")+"\nvar vs=P.points();xy(vs[Math.min("+i+",vs.length-1)]);",anchor=transform(frame,'ADBE Anchor Point'),scale=transform(frame,'ADBE Scale'),a=anchor.value,s=scale.value,rotation=transform(frame,'ADBE Rotate Z');
+            if(!frame.parent||frame.parent.id!==layer.id||framePos.numKeys||!framePos.expressionEnabled||(framePos.expression!==expected&&framePos.expression!==oldExpected)||anchor.numKeys||anchor.expression!==''||a[0]!==0||a[1]!==0||scale.numKeys||scale.expression!==''||s[0]!==100||s[1]!==100||rotation.value!==0||rotation.numKeys||rotation.expression!==''){
+                fail('路径点 '+(i+1)+' 的跟随框架已修改，保留原结构。');
+            }
+            /* Changing parent without compensation preserves the user's offset keys. */
+            items.push({h:h,index:i,frame:frame});
+        }
+        app.beginUndoGroup('AE Arrow Live — 路径点减为单空对象');
+        try{
+            for(i=0;i<items.length;i++){
+                h=items[i].h;h.setParentWithJump(layer);applied.push(items[i]);expression(transform(h,'ADBE Position'),pointExpression(data.descriptor,items[i].index));frames.push(items[i].frame);
+            }
+            data.descriptor.pointMode='single';data.version=4;saveInfo(layer,data);committed=true;
+            for(i=0;i<frames.length;i++){
+                frame=frames[i];var j,hasChild=false;for(j=1;j<=c.numLayers;j++){if(c.layer(j).parent&&c.layer(j).parent.id===frame.id){hasChild=true;break;}}
+                if(!hasChild){if(frame.source){footage.push(frame.source);}frame.locked=false;frame.remove();}
+            }
+            for(i=0;i<footage.length;i++){try{if(footage[i].usedIn.length===0){footage[i].remove();}}catch(ignore){}}
+            return readLayer(layer,c);
+        }catch(error){if(!committed){for(i=applied.length-1;i>=0;i--){try{transform(applied[i].h,'ADBE Position').expression='';applied[i].h.setParentWithJump(applied[i].frame);}catch(ignoreRollback){}}}throw error;}
+        finally{app.endUndoGroup();}
+    }
+    function pickColor(target){
+        var layer=resolve(target),prop=effect(layer,"color"),c=layer.containingComp,selected=c.selectedLayers,props=c.selectedProperties,i;
+        if(layer.locked){fail("箭头图层已锁定。");}if(prop.numKeys||prop.expression!==""){fail("颜色已有动画或表达式，请在 AE 的颜色控件中编辑。");}
+        /* Edit Value opens AE's own picker on the existing Color Control. No temporary layer or script undo group. */
+        try{for(i=0;i<props.length;i++){props[i].selected=false;}selectOnly(c,[layer]);prop.selected=true;app.executeCommand(2240);return prop.value;}
+        finally{prop.selected=false;selectOnly(c,selected);for(i=0;i<props.length;i++){try{props[i].selected=true;}catch(ignored){}}}
+    }
+    A.LiveHost={create:create,read:read,readTarget:function(target){var layer=resolve(target);return readLayer(layer,layer.containingComp);},set:set,setAngle:setAngle,resolve:resolve,showHandles:showHandles,selectHandle:selectHandle,editSource:editSource,sourceLabel:sourceLabel,selectArrow:selectArrow,showPoints:showPoints,syncPoints:syncPoints,upgradeSliders:upgradeSliders,upgradePseudo:upgradePseudo,upgradeAffinity:upgradeAffinity,compactPoints:compactPoints,pickColor:pickColor,defaults:defaults,part:part,sourceHeader:sourceHeader,pointExpression:pointExpression,parameters:parameters,info:info,controller:controller,pointController:pointController,parameter:effect};
+}(Arrow));

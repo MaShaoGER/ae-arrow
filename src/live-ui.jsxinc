@@ -1,0 +1,42 @@
+/* Creation/editing only; animatable style controls live in the Effect Controls panel. */
+(function(A){
+    function open(thisObj,options){
+        var win=thisObj instanceof Panel?thisObj:new Window('palette','AE Arrow '+A.version,undefined,{resizeable:true}),target=null;
+        win.orientation='column';win.alignChildren=['fill','top'];win.spacing=8;win.margins=12;win.minimumSize=[320,300];
+        var actions=win.add('group'),create=actions.add('button',undefined,'从选中路径创建'),read=actions.add('button',undefined,'读取箭头');
+        var hide=win.add('checkbox',undefined,'创建时隐藏源图层');hide.value=true;
+        var threeD=win.add('checkbox',undefined,'创建三维箭头（源图层同步开启三维）');threeD.helpTip='三维源层自动启用。箭头和路径点处于源层平面，跟随源层与父层，参与摄像机透视。';
+        var current=win.add('statictext',undefined,'尚未读取箭头');current.characters=32;
+        var nativeButton=win.add('button',undefined,'选择箭头图层');nativeButton.helpTip='选中后按 F3，在效果控件最底部的“◆ 箭头样式 · 在此调整”中编辑。';
+        var path=win.add('panel',undefined,'路径');path.orientation='column';path.alignChildren=['fill','top'];path.margins=[10,18,10,10];
+        var row=path.add('group'),source=row.add('button',undefined,'编辑源路径'),sync=row.add('button',undefined,'生成 / 补齐路径点');
+        source.helpTip='直接选中具体路径属性，保留路径关键帧与表达式。在时间线连按 S 显示所选属性，按 X 滚动到图层。';
+        var sourceLabel=path.add('statictext',undefined,'',{multiline:true});sourceLabel.preferredSize=[280,32];
+        var pointsRow=path.add('group'),points=pointsRow.add('dropdownlist',undefined,['全部路径点']),select=pointsRow.add('button',undefined,'选择空对象');points.preferredSize.width=150;points.selection=0;
+        var upgrade=win.add('button',undefined,'转为伪效果'),compact=win.add('button',undefined,'路径点减为单空对象');upgrade.visible=compact.visible=false;
+        var affinity=win.add('button',undefined,'采用 Affinity 端点');affinity.visible=false;affinity.helpTip='保留源路径和路径点动画。仅转换静态旧样式；空心、开放尖角、燕尾会映射到最接近的新样式。';
+        var status=win.add('statictext',undefined,'选中开放的钢笔 / 蒙版路径后创建箭头。',{multiline:true});status.preferredSize=[300,44];
+        function guard(fn){try{fn();}catch(e){status.text=e.message||String(e);status.helpTip=status.text;}}
+        function load(r){
+            target={compId:r.compId,layerId:r.layerId};current.text=r.name+' · '+r.pointCount+' 个点'+(r.threeD?' · 三维':'');points.removeAll();points.add('item','全部路径点');
+            sourceLabel.text=A.LiveHost.sourceLabel(target);sourceLabel.helpTip=sourceLabel.text;
+            for(var i=0;i<r.pointCount;i++){points.add('item','路径点 '+(i+1));}points.selection=0;
+            nativeButton.enabled=path.enabled=true;upgrade.visible=r.controls!=='pseudo';compact.visible=r.pointMode!=='single';
+            affinity.visible=r.controls==='pseudo'&&!r.affinity;
+            upgrade.text=r.controls==='handles'?'旧版样式点转为效果滑块':'转为伪效果';win.layout.layout(true);win.layout.resize();
+        }
+        nativeButton.enabled=path.enabled=false;
+        create.onClick=function(){guard(function(){var r=A.LiveHost.create({hideSource:hide.value,threeD:threeD.value});load(r);A.LiveHost.selectArrow(target);status.text=r.threeD?'已创建三维箭头。移动 / 旋转源图层；按 F3 调整样式。':'已创建。按 F3 调整箭头效果；每个路径点仅一个空对象。';});};
+        read.onClick=function(){guard(function(){load(A.LiveHost.read());status.text='已读取。按 F3 调整样式，或选择路径点移动。';});};
+        nativeButton.onClick=function(){guard(function(){A.LiveHost.selectArrow(target);status.text='已选中箭头。按 F3 打开效果控件。';});};
+        source.onClick=function(){guard(function(){A.LiveHost.editSource(target);status.text='已选中具体路径。时间线连按 S 显示所选属性，按 X 定位图层。';});};
+        sync.onClick=function(){guard(function(){load(A.LiveHost.syncPoints(target));A.LiveHost.showPoints(target);status.text='已补齐路径点，已有偏移和动画保留。';});};
+        select.onClick=function(){guard(function(){A.LiveHost.showPoints(target,points.selection.index===0?undefined:points.selection.index-1);status.text='已选中路径点；位置表达式叠加源路径与自身偏移。';});};
+        upgrade.onClick=function(){guard(function(){var r=A.LiveHost.readTarget(target);load(r.controls==='handles'?A.LiveHost.upgradeSliders(target):A.LiveHost.upgradePseudo(target));status.text='控件已转换，按 F3 查看。';});};
+        compact.onClick=function(){guard(function(){load(A.LiveHost.compactPoints(target));status.text='已合并跟随框架；每个路径点仅一个空对象，偏移关键帧保留。';});};
+        affinity.onClick=function(){guard(function(){load(A.LiveHost.upgradeAffinity(target));status.text='已采用 Affinity 端点；保留路径点动画，旧端点映射为最接近的新样式。';});};
+        win.onResize=win.onResizing=function(){this.layout.resize();};win.layout.layout(true);win.layout.resize();
+        if(win instanceof Window&&(!options||options.show!==false)){win.center();win.show();}return win;
+    }
+    A.LiveUI={open:open};
+}(Arrow));

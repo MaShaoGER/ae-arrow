@@ -1,0 +1,79 @@
+/* ScriptUI edits native controls; the composition is the live preview. */
+(function(A){
+    var LABELS=["无","实心箭头","空心箭头","开放尖角","燕尾","圆点 / 椭圆","方块","菱形"];
+    function open(thisObj,options){
+        var win=thisObj instanceof Panel?thisObj:new Window("palette","AE Arrow Live "+A.version,undefined,{resizeable:true}),target=null,loading=false,controls={},rgba=A.LiveHost.defaults().color;
+        win.orientation="column";win.alignChildren=["fill","top"];win.spacing=10;win.margins=12;win.minimumSize=[380,540];
+        win.add("statictext",undefined,"AE Arrow  ·  实时路径箭头");
+        var pathPanel=panel(win,"路径与编辑"),intro=pathPanel.add("statictext",undefined,"选中开放的钢笔 / 蒙版路径，创建后可拖动路径点。",{multiline:true});intro.preferredSize=[350,30];
+        var actions=pathPanel.add("group");actions.alignChildren=["fill","center"];
+        var create=actions.add("button",undefined,"从选中路径创建"),read=actions.add("button",undefined,"读取箭头");
+        var hideSource=pathPanel.add("checkbox",undefined,"创建时隐藏源图层");hideSource.value=true;hideSource.helpTip="原路径仍保留。源图层包含其他图形时取消勾选。";
+        var targetInfo=pathPanel.add("statictext",undefined,"尚未读取箭头");targetInfo.characters=38;
+        var pathActions=pathPanel.add("group"),source=pathActions.add("button",undefined,"编辑源路径"),sync=pathActions.add("button",undefined,"生成 / 补齐路径点");
+        sync.preferredSize.width=160;
+        sync.helpTip="按当前顶点顺序生成空对象；已有点的位移和动画保留。增加顶点后再次点击；插入或删除顶点会改变序号对应。";
+        var pointRow=pathPanel.add("group");pointRow.add("statictext",undefined,"路径点：");var points=pointRow.add("dropdownlist",undefined,["全部路径点"]);points.selection=0;points.preferredSize.width=145;
+        var selectPoint=pointRow.add("button",undefined,"选择空对象");
+        var appearance=panel(win,"外观"),colorRow=appearance.add("group");colorRow.add("statictext",undefined,"颜色：");
+        var picker=colorRow.add("button",undefined,"");picker.preferredSize=[72,24];picker.helpTip="点击色块打开 AE 原生选色框（含吸管和十六进制输入）。";
+        var dashed=colorRow.add("checkbox",undefined,"虚线线身");
+        var nativeRow=appearance.add("group"),nativeButton=nativeRow.add("button",undefined,"选择箭头图层"),refresh=nativeRow.add("button",undefined,"刷新参数");
+        nativeButton.helpTip="选中箭头后按 F3 打开效果控件，直接拖动 AA 滑块并实时预览；也可设置关键帧。";
+        var tabs=win.add("tabbedpanel");tabs.alignChildren=["fill","top"];tabs.preferredSize=[356,210];
+        var body=tabs.add("tab",undefined,"线身"),st=tabs.add("tab",undefined,"起点"),et=tabs.add("tab",undefined,"终点");
+        var panels=[body,st,et],i;for(i=0;i<panels.length;i++){panels[i].orientation="column";panels[i].alignChildren=["fill","top"];panels[i].spacing=8;panels[i].margins=10;}
+        metric(body,"线身粗细","width",.5,300,false);metric(body,"虚线长度","dash",.5,200,false);metric(body,"虚线间隔","gap",.5,200,false);
+        var start=endPanel(st,"start"),end=endPanel(et,"end");
+        var upgrade=win.add("button",undefined,"旧版样式点转为效果滑块");upgrade.visible=false;
+        upgrade.helpTip="保留当前样式参数，停用旧版样式点。有动画的旧版控制会保留，不自动转换。";
+        var status=win.add("statictext",undefined,"先创建箭头，或选中已有箭头后读取。",{multiline:true});status.preferredSize=[356,38];
+        win.add("statictext",undefined,A.version+"  ·  样式用滑块，路径用空对象");
+        var editable=[pathActions,pointRow,appearance,tabs];tabs.selection=body;enable(false);
+        function panel(parent,text){var p=parent.add("panel",undefined,text);p.orientation="column";p.alignChildren=["fill","top"];p.spacing=7;p.margins=[10,18,10,10];return p;}
+        function enable(value){for(var n=0;n<editable.length;n++){editable[n].enabled=value;}}
+        function message(text){status.text=text;status.helpTip=text;}
+        function guard(fn){try{fn();}catch(e){message(e.message||String(e));}}
+        function repaintColor(){picker.notify("onDraw");}
+        picker.onDraw=function(){var g=this.graphics,w=this.size.width,h=this.size.height;g.drawOSControl();g.newPath();g.rectPath(5,4,w-10,h-8);g.fillPath(g.newBrush(g.BrushType.SOLID_COLOR,[rgba[0],rgba[1],rgba[2],1]));};
+        function change(key,value,angle){if(loading){return;}guard(function(){if(angle){A.LiveHost.setAngle(target,key,value);}else{A.LiveHost.set(target,key,value);}message("已实时更新。效果控件也可直接调整和设置关键帧。");});}
+        function metric(parent,label,key,min,max,angle){
+            var row=parent.add("group");row.orientation="row";row.alignChildren=["left","center"];row.add("statictext",undefined,label).preferredSize.width=72;
+            var slider=row.add("slider",undefined,min,min,max);slider.alignment=["fill","center"];slider.preferredSize.width=165;slider.minimumSize.width=70;
+            var input=row.add("edittext",undefined,"0");input.characters=6;
+            controls[key+(angle?"Angle":"")]={field:input,slider:slider,angle:angle};
+            function send(){var value=Math.round(slider.value*100)/100;input.text=String(value);change(key,value,angle);}
+            slider.onChanging=send;slider.onChange=send;
+            input.onChanging=function(){var value=Number(input.text);if(input.text.replace(/\s/g,"")!==""&&isFinite(value)&&value>=min&&value<=max){slider.value=value;change(key,value,angle);}};
+            input.onChange=function(){var value=Number(input.text);if(input.text.replace(/\s/g,"")===""||!isFinite(value)||value<min||value>max){message(label+"请输入 "+min+"–"+max);return;}slider.value=value;change(key,value,angle);};
+        }
+        function endPanel(parent,key){
+            var row=parent.add("group");row.add("statictext",undefined,"端点样式").preferredSize.width=72;var kind=row.add("dropdownlist",undefined,LABELS);kind.preferredSize.width=220;kind.selection=key==="start"?0:1;
+            metric(parent,"连接位置",key+"Length",.5,600,false);metric(parent,"头尖夹角",key,5,170,true);metric(parent,"头部高度",key+"Width",1,600,false);
+            var note=parent.add("statictext",undefined,"连接位置和尖角独立调整，合成窗口实时预览。",{multiline:true});note.preferredSize=[330,30];
+            kind.onChange=function(){if(!loading&&kind.selection){change(key+"Type",kind.selection.index);}};return kind;
+        }
+        function load(result){target={compId:result.compId,layerId:result.layerId};loading=true;try{
+            var p=result.params,key,value,item,n;for(key in controls){if(controls.hasOwnProperty(key)){item=controls[key];value=item.angle?2*Math.atan(p[key.substr(0,key.length-5)+"Width"]/(2*p[key.substr(0,key.length-5)+"Depth"]))*180/Math.PI:p[key];item.field.text=String(Math.round(value*100)/100);item.slider.value=value;}}
+            start.selection=p.startType;end.selection=p.endType;dashed.value=p.dashed>0;rgba=p.color;repaintColor();
+            points.removeAll();points.add("item","全部路径点");for(n=0;n<result.pointCount;n++){points.add("item","路径点 "+(n+1));}points.selection=0;
+            targetInfo.text=result.name+"  ·  "+result.pointCount+" 个路径点";targetInfo.helpTip=targetInfo.text;upgrade.visible=result.controls!=="sliders";enable(true);dashState();win.layout.layout(true);win.layout.resize();
+        }finally{loading=false;}}
+        function dashState(){controls.dash.field.parent.enabled=dashed.value;controls.gap.field.parent.enabled=dashed.value;}
+        create.onClick=function(){guard(function(){load(A.LiveHost.create({hideSource:hideSource.value}));A.LiveHost.showPoints(target);message("已创建。拖动路径点空对象改变路线；样式在滑块中调整。");});};
+        read.onClick=function(){guard(function(){load(A.LiveHost.read());message(upgrade.visible?"已读取旧版。可补齐路径点，并将无动画的样式点转为滑块。":"已读取。可选中路径点移动，或直接调整样式滑块。");});};
+        source.onClick=function(){guard(function(){A.LiveHost.editSource(target);message("已选中源路径。可编辑顶点、切线和关键帧；空对象位移仍叠加。");});};
+        sync.onClick=function(){guard(function(){load(A.LiveHost.syncPoints(target));A.LiveHost.showPoints(target);message("已补齐 / 修复路径点空对象，保留已有点的位移与动画。");});};
+        selectPoint.onClick=function(){guard(function(){A.LiveHost.showPoints(target,points.selection.index===0?undefined:points.selection.index-1);message("已选中路径点空对象。可在合成中拖动、方向键微调或设置位置关键帧。");});};
+        nativeButton.onClick=function(){guard(function(){A.LiveHost.selectArrow(target);message("已选中箭头。按 F3 打开效果控件，拖动 AA 滑块实时调整。");});};
+        refresh.onClick=function(){guard(function(){load(A.LiveHost.readTarget(target));message("已同步当前帧的效果控件参数和颜色。");});};
+        upgrade.onClick=function(){guard(function(){load(A.LiveHost.upgradeSliders(target));message("已转为直接效果滑块，原样式点已停用。路径点可另行生成。");});};
+        dashed.onClick=function(){change("dashed",dashed.value?1:0);dashState();};
+        picker.onClick=function(){guard(function(){A.LiveHost.pickColor(target);load(A.LiveHost.readTarget(target));message("颜色已同步。取消选色会保留原颜色。");});};
+        win.onResize=win.onResizing=function(){this.layout.resize();};
+        try{win.layout.layout(true);}catch(layoutError){throw new Error("面板布局失败："+String(layoutError));}
+        try{win.layout.resize();}catch(resizeError){throw new Error("面板尺寸失败："+String(resizeError));}
+        if(win instanceof Window&&(!options||options.show!==false)){win.center();win.show();}return win;
+    }
+    A.LiveUI={open:open};
+}(Arrow));

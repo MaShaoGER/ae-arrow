@@ -1,0 +1,217 @@
+/* Runs in the real AE scripting engine, using only newly created test items. */
+(function (A) {
+    var directory = File($.fileName).parent; directory.create();
+    var report = { appVersion: app.version, build: app.buildName, engine: $.version, passed: 0, failed: 0, cases: [], timings: {}, skipped: [] };
+    var testItems = [], testSources = [], suiteComp = null, galleryComp = null;
+    function writeReport() {
+        var file = new File(directory.fsName + "/ae-native-tests.json"); file.encoding = "UTF-8";
+        if (!file.open("w")) { throw new Error("Cannot write test report: " + file.error); }
+        try { file.write(A.Codec.stringify(report)); } finally { file.close(); }
+    }
+    function assert(condition, message) { if (!condition) { throw new Error(message || "Assertion failed"); } }
+    function same(a, b, message) { assert(A.Codec.stringify(a) === A.Codec.stringify(b), message || "Values differ"); }
+    function near(a, b, tolerance) { assert(Math.abs(a - b) <= (tolerance || 0.0001), "Expected " + a + " near " + b); }
+    function rejects(callback, text) {
+        var caught = false;
+        try { callback(); } catch (error) { caught = true; if (text) { assert(error.message.indexOf(text) >= 0, error.message); } }
+        assert(caught, "Expected rejection");
+    }
+    function test(name, run) {
+        try { run(); report.passed++; report.cases.push({ name: name, status: "pass" }); }
+        catch (error) { report.failed++; report.cases.push({ name: name, status: "fail", error: error.toString(), line: error.line }); }
+        writeReport();
+    }
+    function activate(item) {
+        var i;
+        for (i = 1; i <= app.project.numItems; i++) { app.project.item(i).selected = false; }
+        item.selected = true; item.openInViewer();
+        assert(app.project.activeItem && app.project.activeItem.id === item.id, "Could not activate test composition");
+    }
+    function selectedLayer() { return suiteComp.selectedLayers[0]; }
+    function create(p) { activate(suiteComp); A.Host.create(p || A.Model.defaults()); return selectedLayer(); }
+    function part(layer, name) {
+        return layer.property("ADBE Root Vectors Group").property("__AE_ARROW_V1__").property("ADBE Vectors Group").property(name).property("ADBE Vectors Group");
+    }
+    function shape(layer, name) { return part(layer, name).property("ADBE Vector Shape - Group").property("ADBE Vector Shape"); }
+    function hasVisible(group, matchName) { var i; for (i = 1; i <= group.numProperties; i++) { if (group.property(i).matchName === matchName && group.property(i).canSetExpression) { return true; } } return false; }
+    function select(layer) { var i; activate(suiteComp); for (i = 1; i <= suiteComp.numLayers; i++) { suiteComp.layer(i).selected = false; } layer.selected = true; }
+    function findUI(container, type, text) {
+        var i, result;
+        if (container.type === type && (text === undefined || container.text === text)) { return container; }
+        if (container.children) { for (i = 0; i < container.children.length; i++) { result = findUI(container.children[i], type, text); if (result) { return result; } } }
+        return null;
+    }
+    function fieldByLabel(win, label) {
+        var labelElement = findUI(win, "statictext", label), i;
+        assert(labelElement, "Missing label: " + label);
+        for (i = 0; i < labelElement.parent.children.length; i++) { if (labelElement.parent.children[i].type === "edittext") { return labelElement.parent.children[i]; } }
+        throw new Error("Missing input for " + label);
+    }
+    function sliderByLabel(win, label) {
+        var labelElement = findUI(win, "statictext", label), i;
+        for (i = 0; i < labelElement.parent.children.length; i++) { if (labelElement.parent.children[i].type === "slider") { return labelElement.parent.children[i]; } }
+        throw new Error("Missing slider for " + label);
+    }
+    writeReport();
+    app.beginSuppressDialogs();
+    try {
+        test("Real ExtendScript comp activation", function () {
+            suiteComp = app.project.items.addComp("AE Arrow Automated Tests", 1920, 1080, 1, 2, 30);
+            testItems.push(suiteComp); activate(suiteComp);
+        });
+        test("Create/read native shape and defaults", function () {
+            var layer = create(), data = A.Host.read();
+            assert(layer instanceof ShapeLayer); assert(!data.modified);
+            same(data.params, A.Model.defaults()); assert(shape(layer, "Body").value.vertices.length === 2);
+            near(layer.property("ADBE Transform Group").property("ADBE Position").value[0], 960);
+        });
+        test("All 12 presets create cleanly in actual AE", function () {
+            var i;
+            for (i = 0; i < A.Model.presets.length; i++) { create(A.Model.preset(i)); assert(!A.Host.read().modified, "Preset " + i); }
+        });
+        test("All 64 marker pairs update in place", function () {
+            var layer = create(), id = layer.id, p = A.Model.defaults(), i, j;
+            for (i = 0; i < A.Model.markers.length; i++) {
+                for (j = 0; j < A.Model.markers.length; j++) {
+                    p.start.type = A.Model.markers[i]; p.end.type = A.Model.markers[j]; A.Host.update(p);
+                    assert(selectedLayer().id === id); assert(!A.Host.read().modified); same(A.Host.read().params, p);
+                }
+            }
+        });
+        test("Curve and dash toggles repeatedly read back", function () {
+            var layer = create(), p = A.Model.defaults(), i;
+            for (i = 0; i < 10; i++) {
+                p.pathType = "curve"; p.bend = 80 + i * 10; p.dashed = i % 2 === 0; A.Host.update(p);
+                var dashes = part(layer, "Body").property("ADBE Vector Graphic - Stroke").property("ADBE Vector Stroke Dashes");
+                assert(hasVisible(dashes, "ADBE Vector Stroke Dash 1") === p.dashed); assert(!A.Host.read().modified);
+            }
+        });
+        test("Update preserves transform, parent and user note", function () {
+            var layer = create(), p = A.Model.defaults(), transform = layer.property("ADBE Transform Group");
+            var parent = suiteComp.layers.addNull(); testSources.push(parent.source); layer.parent = parent;
+            transform.property("ADBE Position").setValue([137, 829]); transform.property("ADBE Rotate Z").setValue(27); transform.property("ADBE Scale").setValue([125, 80]);
+            var beforePosition = transform.property("ADBE Position").value, beforeScale = transform.property("ADBE Scale").value;
+            layer.comment = "用户备注\n" + layer.comment; select(layer); p.strokeWidth = 13; A.Host.update(p);
+            same(transform.property("ADBE Position").value, beforePosition); same(transform.property("ADBE Scale").value, beforeScale);
+            near(transform.property("ADBE Rotate Z").value, 27); assert(layer.parent.id === parent.id); assert(layer.comment.indexOf("用户备注\n") === 0);
+        });
+        test("Different initial positions stay distinct after identical updates", function () {
+            var first = create(), second = create(), p = A.Model.defaults();
+            first.property("ADBE Transform Group").property("ADBE Position").setValue([130, 230]);
+            second.property("ADBE Transform Group").property("ADBE Position").setValue([1250, 770]);
+            p.length = 650; select(first); A.Host.update(p); select(second); A.Host.update(p);
+            near(first.property("ADBE Transform Group").property("ADBE Position").value[0], 130);
+            near(first.property("ADBE Transform Group").property("ADBE Position").value[1], 230);
+            near(second.property("ADBE Transform Group").property("ADBE Position").value[0], 1250);
+            near(second.property("ADBE Transform Group").property("ADBE Position").value[1], 770);
+        });
+        test("Duplicate layer and duplicate names target actual layer IDs", function () {
+            var original = create(), duplicate = original.duplicate(), p = A.Model.defaults();
+            duplicate.name = original.name; select(duplicate); assert(!A.Host.read().modified);
+            p.end.type = "diamond"; A.Host.update(p); same(A.Host.read().params, p);
+            select(original); assert(A.Host.read().params.end.type === "triangle");
+        });
+        test("Locked layer rejects update without changing metadata", function () {
+            var layer = create(), before = layer.comment; layer.locked = true;
+            rejects(function () { A.Host.update(A.Model.defaults()); }, "锁定"); assert(layer.comment === before); layer.locked = false;
+        });
+        test("Manual managed path edits are retained and detected", function () {
+            var layer = create(), prop = shape(layer, "End"), value = prop.value, vertices = value.vertices; vertices[0] = [214, 10]; value.vertices = vertices; prop.setValue(value);
+            assert(A.Host.read().modified); rejects(function () { A.Host.update(A.Model.defaults()); }, "手动修改");
+            near(shape(layer, "End").value.vertices[0][0], 214);
+        });
+        test("Manually revealing a default-valued dash slot is detected", function () {
+            var layer = create(), dashes = part(layer, "Body").property("ADBE Vector Graphic - Stroke").property("ADBE Vector Stroke Dashes");
+            dashes.addProperty("ADBE Vector Stroke Dash 1");
+            assert(A.Host.read().modified); rejects(function () { A.Host.update(A.Model.defaults()); }, "手动修改");
+        });
+        test("Keyframes on owned paths are not overwritten", function () {
+            var layer = create(), prop = shape(layer, "Body"), value = prop.value;
+            prop.setValueAtTime(0, value); rejects(function () { A.Host.update(A.Model.defaults()); }, "关键帧"); assert(prop.numKeys === 1);
+        });
+        test("Expressions on owned properties are not overwritten", function () {
+            var layer = create(), width = part(layer, "Body").property("ADBE Vector Graphic - Stroke").property("ADBE Vector Stroke Width");
+            width.expression = "value + 1"; rejects(function () { A.Host.update(A.Model.defaults()); }, "表达式"); assert(width.expression === "value + 1");
+        });
+        test("Target changes reject write without modifying either layer", function () {
+            var first = create(), expected = A.Host.read(), second = create(), before = second.comment;
+            rejects(function () { A.Host.update(A.Model.defaults(), expected); }, "选中对象"); assert(second.comment === before);
+        });
+        test("Unrelated root group and outside effect survive", function () {
+            var layer = create(), unrelated = layer.property("ADBE Root Vectors Group").addProperty("ADBE Vector Group"); unrelated.name = "User Content";
+            layer.property("ADBE Effect Parade").addProperty("ADBE Slider Control").name = "User Slider";
+            var p = A.Model.defaults(); p.strokeWidth = 15; A.Host.update(p);
+            assert(layer.property("ADBE Root Vectors Group").property("User Content") !== null);
+            assert(layer.property("ADBE Effect Parade").property("User Slider") !== null);
+        });
+        test("Short path creates without invalid shape values", function () {
+            var p = A.Model.defaults(); p.length = 10; p.start.type = "triangle"; p.start.length = 1000; p.end.length = 1000;
+            create(p); assert(!A.Host.read().modified); same(A.Host.read().params, p);
+        });
+        test("Invalid create leaves layer count unchanged", function () {
+            activate(suiteComp); var count = suiteComp.numLayers, p = A.Model.defaults(); p.startGap = 1000;
+            rejects(function () { A.Host.create(p); }, "留空"); assert(suiteComp.numLayers === count);
+        });
+        test("Unchanged geometry remains unchanged after color-only update", function () {
+            var p = A.Model.defaults(); p.pathType = "curve"; var layer = create(p), before = shape(layer, "Body").value;
+            p.color = [0.9, 0.1, 0.2]; A.Host.update(p);
+            same(shape(layer, "Body").value.vertices, before.vertices); same(shape(layer, "Body").value.inTangents, before.inTangents);
+        });
+        test("ScriptUI layout and button actions", function () {
+            activate(suiteComp); var win = A.UI.open(null, { show: false });
+            try {
+                assert(findUI(win, "image"), "Drawable preview missing");
+                assert(findUI(win, "statictext", "准备就绪。请打开合成后创建箭头。"), "Preview setup reported an error");
+                assert(findUI(win, "button", "创建箭头")); assert(findUI(win, "tab", "端点"));
+                findUI(win, "button", "创建箭头").onClick(); var layer = selectedLayer(); assert(layer);
+                var field = fieldByLabel(win, "总长度"); field.text = "620"; field.onChange();
+                findUI(win, "button", "更新选中").onClick(); near(A.Host.read().params.length, 620);
+            } finally { win.close(); }
+        });
+        test("ScriptUI slider only commits on release and refuses stale target", function () {
+            activate(suiteComp); var win = A.UI.open(null, { show: false });
+            try {
+                findUI(win, "button", "创建箭头").onClick();
+                var layer = selectedLayer(), before = layer.comment, auto = findUI(win, "checkbox", "松手更新已读取箭头"), slider = sliderByLabel(win, "总长度");
+                auto.value = true; auto.onClick(); slider.value = 700; slider.onChanging(); assert(layer.comment === before);
+                slider.onChange(); near(A.Host.read().params.length, 700);
+                slider.value = 760; slider.onChanging(); var other = create(); before = other.comment;
+                slider.onChange(); assert(other.comment === before); select(layer); near(A.Host.read().params.length, 700);
+            } finally { win.close(); }
+        });
+        test("Native update timings, 100 edits with 20+ layers present", function () {
+            var layer = create(), p = A.Model.defaults(), times = [], i, started;
+            for (i = 0; i < 100; i++) {
+                p.strokeWidth = 5 + i % 30; started = new Date().getTime(); A.Host.update(p); times.push(new Date().getTime() - started);
+            }
+            times.sort(function (a, b) { return a - b; });
+            report.timings.nativeUpdateMs = { median: times[50], p95: times[95], samples: times.length, layerCount: suiteComp.numLayers, excludes: "screen repaint" };
+        });
+        test("Native 12-style gallery and PNG render request", function () {
+            galleryComp = app.project.items.addComp("AE Arrow Style Gallery", 1920, 1080, 1, 1, 30); testItems.push(galleryComp); activate(galleryComp);
+            galleryComp.bgColor = [0.035, 0.045, 0.06];
+            var background = galleryComp.layers.addSolid([0.035, 0.045, 0.06], "Gallery Background", 1920, 1080, 1, 1), i, p, layer, text;
+            testSources.push(background.source);
+            for (i = 0; i < A.Model.presets.length; i++) {
+                p = A.Model.preset(i); p.length = 400; if (p.pathType === "curve") { p.bend = 65; }
+                A.Host.create(p); layer = galleryComp.selectedLayers[0];
+                layer.property("ADBE Transform Group").property("ADBE Position").setValue([320 + (i % 3) * 640, 145 + Math.floor(i / 3) * 245]);
+                text = galleryComp.layers.addText((i + 1) + ". " + A.Model.presets[i].name);
+                var doc = text.property("ADBE Text Properties").property("ADBE Text Document").value;
+                doc.fontSize = 30; doc.fillColor = [0.9, 0.93, 1]; text.property("ADBE Text Properties").property("ADBE Text Document").setValue(doc);
+                text.property("ADBE Transform Group").property("ADBE Position").setValue([120 + (i % 3) * 640, 220 + Math.floor(i / 3) * 245]);
+            }
+            report.gallery = { path: directory.fsName + "/style-gallery.png", requestedAt: new Date().getTime(), status: "requested; verify after script returns" };
+            galleryComp.saveFrameToPng(0, new File(report.gallery.path));
+            /* AE finishes this PNG after returning from the script; an immediate exists check is premature. */
+        });
+        report.skipped.push("Undo/redo through the actual AE menu and visible docked-panel interaction require UI verification.");
+        report.skipped.push("JSON save/open dialogs are not automated; codec and metadata serialization are covered separately.");
+    } catch (fatal) { report.fatal = fatal.toString(); }
+    finally {
+        var i;
+        for (i = testItems.length - 1; i >= 0; i--) { try { testItems[i].remove(); } catch (ignored) {} }
+        for (i = testSources.length - 1; i >= 0; i--) { try { if (testSources[i].usedIn.length === 0) { testSources[i].remove(); } } catch (ignoredSource) {} }
+        app.endSuppressDialogs(false); report.finished = true; writeReport();
+    }
+}(Arrow));

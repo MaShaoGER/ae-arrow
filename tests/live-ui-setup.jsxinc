@@ -1,0 +1,13 @@
+(function(A){
+    var c=app.project.items.addComp('AE Arrow 0.4 UI Verification',1000,600,1,3,30);c.openInViewer();
+    var l=c.layers.addShape();l.name='Pen source';l.property('ADBE Transform Group').property('ADBE Position').setValue([0,0]);
+    var g=l.property('ADBE Root Vectors Group').addProperty('ADBE Vector Group');g.name='Pen';var p=g.property('ADBE Vectors Group').addProperty('ADBE Vector Shape - Group');p.name='Path';
+    var s=new Shape();s.vertices=[[150,350],[500,180],[850,350]];s.inTangents=[[0,0],[0,0],[0,0]];s.outTangents=[[0,0],[0,0],[0,0]];s.closed=false;p=p.property('ADBE Vector Shape');p.setValue(s);l.selected=true;p.selected=true;
+    var t=A.LiveHost.create({controls:"legacyPseudo"}),owner=A.LiveHost.resolve(t);A.LiveHost.set(t,'startType',1);A.LiveHost.set(t,'width',22);A.LiveHost.set(t,'startWidth',90);A.LiveHost.set(t,'endWidth',90);
+    A.LiveHost.setAngle(t,'start',102.68);A.LiveHost.setAngle(t,'end',102.68);
+    var ui=A.LiveUI.open(null,{show:false});
+    function find(w,text){var i,r;if(w.type==='button'&&w.text===text){return w;}if(w.children){for(i=0;i<w.children.length;i++){r=find(w.children[i],text);if(r){return r;}}}return null;}
+    find(ui,'读取箭头').onClick();ui.location=[2100,200];ui.show();
+    A.LiveHost.showPoints(t,1);app.activeViewer.views[0].options.zoom=1;
+    $.global.AEArrowLiveQA={comp:c,target:t,owner:owner,source:l,Arrow:A,ui:ui};
+}(Arrow));

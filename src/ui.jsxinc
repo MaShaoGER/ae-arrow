@@ -1,0 +1,310 @@
+/* ScriptUI shell: continuous local preview, optional commit on release. */
+(function (A) {
+    var MARKER_LABELS = ["无", "实心三角", "空心三角", "开放尖角", "燕尾", "圆点 / 椭圆", "方块", "菱形"];
+    function indexOf(items, value) { var i; for (i = 0; i < items.length; i++) { if (items[i] === value) { return i; } } return 0; }
+    function get(object, key) { var parts = key.split("."), i; for (i = 0; i < parts.length; i++) { object = object[parts[i]]; } return object; }
+    function put(object, key, value) { var parts = key.split("."), i; for (i = 0; i < parts.length - 1; i++) { object = object[parts[i]]; } object[parts[parts.length - 1]] = value; }
+    function hexColor(color) {
+        var result = "#", i, part;
+        for (i = 0; i < 3; i++) { part = Math.round(color[i] * 255).toString(16); result += part.length < 2 ? "0" + part : part; }
+        return result.toUpperCase();
+    }
+    function parseColor(text) {
+        text = text.replace(/^\s+|\s+$/g, "").replace(/^#/, "");
+        if (!/^[0-9a-fA-F]{6}$/.test(text)) { throw new Error("颜色请输入六位十六进制，例如 #33A6FF。"); }
+        return [parseInt(text.substr(0, 2), 16) / 255, parseInt(text.substr(2, 2), 16) / 255, parseInt(text.substr(4, 2), 16) / 255];
+    }
+    function open(thisObj, options) {
+        var win = thisObj instanceof Panel ? thisObj : new Window("palette", "AE Arrow " + A.version, undefined, { resizeable: true });
+        var state = A.Model.defaults(), plan = A.Geometry.generate(state), controls = {}, loading = false, target = null;
+        var dragTarget = null, dragActive = false, dragBlocked = false, drawProblem = "";
+        win.orientation = "column"; win.alignChildren = ["fill", "top"]; win.spacing = 8; win.margins = 12;
+        win.minimumSize = [460, 650];
+        var title = win.add("statictext", undefined, "AE Arrow  ·  箭头样式工具");
+        var subtitle = win.add("statictext", undefined, "原生形状 · 静态生成 · 起终点独立设置");
+        /* Use a drawable Image; AE's Image and Panel controls have no notify method. */
+        var preview = win.add("image", undefined);
+        preview.preferredSize = [440, 145]; preview.minimumSize = [360, 100]; preview.alignment = ["fill", "fill"];
+        var previewNote = win.add("statictext", undefined, "示意预览自动缩放；AE 输出为实际尺寸的贝塞尔路径。");
+        var common = win.add("group"); common.orientation = "row";
+        common.add("statictext", undefined, "颜色");
+        var colorText = common.add("edittext", undefined, hexColor(state.color)); colorText.characters = 9;
+        var colorButton = common.add("button", undefined, "选色");
+        var autoUpdate = common.add("checkbox", undefined, "松手更新已读取箭头"); autoUpdate.value = false;
+        autoUpdate.helpTip = "本地预览在拖动时更新；AE 图层只在松手后写入一次。请先读取选中箭头。";
+
+        var tabs = win.add("tabbedpanel"); tabs.alignChildren = ["fill", "top"]; tabs.preferredSize = [440, 360]; tabs.minimumSize.height = 350;
+        var bodyTab = tabs.add("tab", undefined, "线身");
+        var endsTab = tabs.add("tab", undefined, "端点");
+        var presetsTab = tabs.add("tab", undefined, "预设");
+        bodyTab.orientation = "column"; bodyTab.alignChildren = ["fill", "top"]; bodyTab.spacing = 5; bodyTab.margins = 10;
+        endsTab.orientation = "row"; endsTab.alignChildren = ["fill", "top"]; endsTab.spacing = 10; endsTab.margins = 10;
+        presetsTab.orientation = "column"; presetsTab.alignChildren = ["fill", "top"]; presetsTab.spacing = 10; presetsTab.margins = 12;
+
+        var actions = win.add("group"); actions.orientation = "row"; actions.alignChildren = ["fill", "center"];
+        var createButton = actions.add("button", undefined, "创建箭头");
+        var readButton = actions.add("button", undefined, "读取选中");
+        var updateButton = actions.add("button", undefined, "更新选中");
+        var status = win.add("statictext", undefined, "准备就绪。请打开合成后创建箭头。", { multiline: true });
+        status.preferredSize = [440, 48]; status.alignment = ["fill", "bottom"];
+        var footer = win.add("statictext", undefined, "0.1.0 测试版 · AE 2026 · 松手后提交图层");
+
+        function message(text) { status.text = text; status.helpTip = text; }
+        function errorMessage(error) { message("操作未完成：" + (error.message || String(error))); }
+        function redraw() {
+            /* Re-show invalidates the control and lets AE paint on the next UI event. */
+            try { preview.hide(); preview.show(); }
+            catch (error) { message("预览刷新失败：" + (error.message || String(error))); }
+        }
+        function refreshPreview() {
+            try { plan = A.Geometry.generate(state); drawProblem = ""; redraw(); if (plan.warning) { message(plan.warning); } return true; }
+            catch (error) { drawProblem = error.message; redraw(); errorMessage(error); return false; }
+        }
+        function availability() {
+            controls.bend.row.enabled = state.pathType === "curve";
+            controls.dash.row.enabled = state.dashed; controls.gap.row.enabled = state.dashed;
+            controls["start.length"].row.enabled = state.start.type !== "none";
+            controls["start.width"].row.enabled = state.start.type !== "none";
+            controls["start.notch"].row.enabled = state.start.type === "stealth";
+            controls["end.length"].row.enabled = state.end.type !== "none";
+            controls["end.width"].row.enabled = state.end.type !== "none";
+            controls["end.notch"].row.enabled = state.end.type === "stealth";
+        }
+        function load(p) {
+            var key;
+            state = A.Model.validate(p); loading = true;
+            try {
+                for (key in controls) { if (controls.hasOwnProperty(key)) { controls[key].load(get(state, key)); } }
+                colorText.text = hexColor(state.color);
+            } finally { loading = false; }
+            dragActive = false; dragTarget = null; dragBlocked = false;
+            availability(); refreshPreview();
+        }
+        function tryAuto(expected) {
+            if (!autoUpdate.value) { return; }
+            if (!target || dragBlocked) { message("已更新面板预览。自动更新需要先读取一个箭头。"); return; }
+            try {
+                var result = A.Host.update(state, expected || target);
+                target = { compId: result.compId, layerId: result.layerId };
+                message("已更新：" + result.name + (result.warning ? "\n" + result.warning : ""));
+            } catch (error) { errorMessage(error); }
+        }
+        function beginDrag() {
+            if (dragActive) { return; }
+            dragActive = true; dragTarget = null; dragBlocked = false;
+            if (autoUpdate.value) {
+                try {
+                    var current = A.Host.selection();
+                    if (!target || target.compId !== current.compId || target.layerId !== current.layerId) { dragBlocked = true; }
+                    else { dragTarget = { compId: current.compId, layerId: current.layerId }; }
+                } catch (ignored) { dragBlocked = true; }
+            }
+        }
+        function change(key, value, commit) {
+            if (loading) { return; }
+            put(state, key, value); availability();
+            if (refreshPreview() && commit) { tryAuto(dragTarget); }
+            if (commit) { dragActive = false; dragTarget = null; dragBlocked = false; }
+        }
+        function numericControl(parent, label, key, min, max, sliderMin, sliderMax, compact) {
+            var row = parent.add("group"); row.orientation = "row"; row.alignChildren = ["left", "center"];
+            var labelControl = row.add("statictext", undefined, label); labelControl.preferredSize.width = compact ? 38 : 62;
+            var field = row.add("edittext", undefined, String(get(state, key))); field.characters = compact ? 5 : 6;
+            var slider = row.add("slider", undefined, get(state, key), sliderMin, sliderMax);
+            slider.alignment = ["fill", "center"]; slider.preferredSize.width = compact ? 60 : 190;
+            field.helpTip = "输入范围 " + min + "–" + max + "；滑条范围 " + sliderMin + "–" + sliderMax;
+            slider.helpTip = field.helpTip;
+            function formatted(n) { return String(Math.round(n * 100) / 100); }
+            controls[key] = {
+                row: row,
+                load: function (value) { field.text = formatted(value); slider.value = Math.max(sliderMin, Math.min(sliderMax, value)); }
+            };
+            field.onChange = function () {
+                if (loading) { return; }
+                var text = field.text.replace(/^\s+|\s+$/g, ""), value = Number(text);
+                if (!/^-?(?:\d+(?:\.\d*)?|\.\d+)$/.test(text) || !isFinite(value) || value < min || value > max) {
+                    controls[key].load(get(state, key)); message(label + "请输入 " + min + "–" + max + " 之间的数字。"); return;
+                }
+                slider.value = Math.max(sliderMin, Math.min(sliderMax, value)); field.text = formatted(value); change(key, value, true);
+            };
+            slider.onChanging = function () {
+                if (loading) { return; }
+                beginDrag(); var value = Math.round(slider.value * 100) / 100;
+                field.text = formatted(value); change(key, value, false);
+            };
+            slider.onChange = function () {
+                if (loading) { return; }
+                var value = Math.round(slider.value * 100) / 100;
+                field.text = formatted(value); change(key, value, true);
+            };
+            return row;
+        }
+        function selectControl(parent, label, key, values, labels) {
+            var row = parent.add("group"); row.orientation = "row";
+            row.add("statictext", undefined, label);
+            var select = row.add("dropdownlist", undefined, labels); select.alignment = ["fill", "center"];
+            select.selection = indexOf(values, get(state, key));
+            controls[key] = { row: row, load: function (value) { select.selection = indexOf(values, value); } };
+            select.onChange = function () { if (!loading && select.selection) { change(key, values[select.selection.index], true); } };
+            return select;
+        }
+        selectControl(bodyTab, "线身", "pathType", ["straight", "curve"], ["直线", "贝塞尔曲线"]);
+        numericControl(bodyTab, "总长度", "length", 10, 10000, 10, 2000, false);
+        numericControl(bodyTab, "弯曲量", "bend", -3000, 3000, -700, 700, false);
+        numericControl(bodyTab, "线宽", "strokeWidth", 0.5, 300, 0.5, 80, false);
+        selectControl(bodyTab, "端帽", "cap", ["butt", "round", "square"], ["平头", "圆头", "方头"]);
+        var dashed = bodyTab.add("checkbox", undefined, "虚线线身");
+        controls.dashed = { load: function (value) { dashed.value = value; } };
+        dashed.onClick = function () { change("dashed", dashed.value, true); };
+        numericControl(bodyTab, "虚线长度", "dash", 0.5, 1000, 0.5, 150, false);
+        numericControl(bodyTab, "虚线间隔", "gap", 0.5, 1000, 0.5, 100, false);
+        numericControl(bodyTab, "起点留空", "startGap", 0, 2000, 0, 300, false);
+        numericControl(bodyTab, "终点留空", "endGap", 0, 2000, 0, 300, false);
+
+        function markerPanel(name, label) {
+            var panel = endsTab.add("panel", undefined, label);
+            panel.orientation = "column"; panel.alignChildren = ["fill", "top"]; panel.margins = 9; panel.spacing = 9;
+            selectControl(panel, "类型", name + ".type", A.Model.markers, MARKER_LABELS);
+            numericControl(panel, "长度", name + ".length", 1, 1000, 1, 160, true);
+            numericControl(panel, "宽度", name + ".width", 1, 1000, 1, 160, true);
+            numericControl(panel, "凹陷", name + ".notch", 0, 0.85, 0, 0.85, true);
+            panel.add("statictext", undefined, "尺寸单位：图层局部像素\n圆点可用长宽调成椭圆。", { multiline: true });
+        }
+        markerPanel("start", "起点"); markerPanel("end", "终点");
+
+        var presetNames = [], i;
+        for (i = 0; i < A.Model.presets.length; i++) { presetNames.push(A.Model.presets[i].name); }
+        var presetSelect = presetsTab.add("dropdownlist", undefined, presetNames); presetSelect.selection = 0;
+        var presetApply = presetsTab.add("button", undefined, "载入内置样式");
+        var presetActions = presetsTab.add("group");
+        var exportButton = presetActions.add("button", undefined, "保存当前预设…");
+        var importButton = presetActions.add("button", undefined, "打开预设…");
+        var presetNote = presetsTab.add("statictext", undefined, "载入预设只改变面板参数；点击“更新选中”应用到现有箭头。\n可读取选中箭头，再创建新箭头以复制其样式。\n保存 / 打开预设可能需要开启 AE 的脚本文件访问权限。", { multiline: true });
+        presetNote.preferredSize = [400, 95];
+        presetApply.onClick = function () {
+            try { load(A.Model.preset(presetSelect.selection.index)); message("已载入样式：" + presetSelect.selection.text + "。请创建或更新箭头。"); }
+            catch (error) { errorMessage(error); }
+        };
+        exportButton.onClick = function () {
+            try { var path = A.Host.exportPreset(state); if (path) { message("预设已保存：\n" + path); } }
+            catch (error) { errorMessage(error); }
+        };
+        importButton.onClick = function () {
+            try { var params = A.Host.importPreset(); if (params) { load(params); message("已打开预设。请创建或更新箭头。"); } }
+            catch (error) { errorMessage(error); }
+        };
+        colorText.onChange = function () {
+            if (loading) { return; }
+            try { state.color = parseColor(colorText.text); colorText.text = hexColor(state.color); if (refreshPreview()) { tryAuto(target); } }
+            catch (error) { colorText.text = hexColor(state.color); errorMessage(error); }
+        };
+        colorButton.onClick = function () {
+            try {
+                var picked = $.colorPicker();
+                if (picked < 0) { return; }
+                state.color = [((picked >> 16) & 255) / 255, ((picked >> 8) & 255) / 255, (picked & 255) / 255];
+                colorText.text = hexColor(state.color); if (refreshPreview()) { tryAuto(target); }
+            } catch (error) { errorMessage(error); }
+        };
+        autoUpdate.onClick = function () {
+            if (autoUpdate.value && !target) { autoUpdate.value = false; message("请先读取选中箭头，再开启松手自动更新。"); }
+            else { message(autoUpdate.value ? "已开启：拖动只预览，松手更新一次。" : "已关闭自动更新。参数调整后点击“更新选中”。"); }
+        };
+        createButton.onClick = function () {
+            try {
+                var result = A.Host.create(state); target = { compId: result.compId, layerId: result.layerId };
+                message("已创建：" + result.name + (result.warning ? "\n" + result.warning : ""));
+            } catch (error) { errorMessage(error); }
+        };
+        readButton.onClick = function () {
+            try {
+                var result = A.Host.read(); load(result.params); target = { compId: result.compId, layerId: result.layerId };
+                if (result.modified) {
+                    autoUpdate.value = false;
+                    message("已读回原参数；内部内容有手动改动。本版保留改动，可用当前参数创建新箭头。");
+                } else { message("已读取：" + result.name + "。可以调整参数并更新。"); }
+            } catch (error) { target = null; autoUpdate.value = false; errorMessage(error); }
+        };
+        updateButton.onClick = function () {
+            try {
+                var result = A.Host.update(state, target); target = { compId: result.compId, layerId: result.layerId };
+                message("已更新：" + result.name + (result.warning ? "\n" + result.warning : ""));
+            } catch (error) { errorMessage(error); }
+        };
+
+        preview.onDraw = function () {
+            var g = this.graphics, w = this.size.width, h = this.size.height;
+            var background = g.newBrush(g.BrushType.SOLID_COLOR, [0.12, 0.13, 0.15, 1]);
+            g.newPath(); g.rectPath(0, 0, w, h); g.fillPath(background);
+            if (drawProblem || !plan || w < 34 || h < 30) { return; }
+            var parts = [plan.body, plan.start, plan.end], lists = [], minX = 1e10, minY = 1e10, maxX = -1e10, maxY = -1e10;
+            var i, j, points, point, p = plan.params;
+            for (i = 0; i < parts.length; i++) {
+                lists[i] = A.Geometry.samples(parts[i].shape, 24);
+                if (!parts[i].visible) { continue; }
+                for (j = 0; j < lists[i].length; j++) {
+                    point = lists[i][j]; minX = Math.min(minX, point[0]); maxX = Math.max(maxX, point[0]);
+                    minY = Math.min(minY, point[1]); maxY = Math.max(maxY, point[1]);
+                }
+            }
+            if (minX > maxX) { return; }
+            var pad = p.strokeWidth / 2;
+            minX -= pad; maxX += pad; minY -= pad; maxY += pad;
+            var scale = Math.min((w - 32) / Math.max(1, maxX - minX), (h - 28) / Math.max(1, maxY - minY));
+            var offsetX = (w - (maxX - minX) * scale) / 2 - minX * scale;
+            var offsetY = (h - (maxY - minY) * scale) / 2 - minY * scale;
+            var rgba = [p.color[0], p.color[1], p.color[2], 1], pen = g.newPen(g.PenType.SOLID_COLOR, rgba, Math.max(0.5, p.strokeWidth * scale));
+            var brush = g.newBrush(g.BrushType.SOLID_COLOR, rgba);
+            function screen(value) { return [offsetX + value[0] * scale, offsetY + value[1] * scale]; }
+            function drawPath(values, closed) {
+                var n, v;
+                g.newPath(); v = screen(values[0]); g.moveTo(v[0], v[1]);
+                for (n = 1; n < values.length; n++) { v = screen(values[n]); g.lineTo(v[0], v[1]); }
+                if (closed) { g.closePath(); }
+            }
+            function roundCap(value) {
+                var v = screen(value), radius = p.strokeWidth * scale / 2;
+                g.newPath(); g.ellipsePath(v[0] - radius, v[1] - radius, radius * 2, radius * 2); g.fillPath(brush);
+            }
+            function dashedPath(values) {
+                /* Preview-only minimum lengths prevent thousands of subpixel drawing calls. */
+                var previewDash = Math.max(p.dash, 2 / scale), previewGap = Math.max(p.gap, 2 / scale);
+                var n, a, b, dx, dy, length, spent, step, at = 0, cycle = previewDash + previewGap, draw, left, from, to, budget = 2048;
+                for (n = 1; n < values.length; n++) {
+                    a = values[n - 1]; b = values[n]; dx = b[0] - a[0]; dy = b[1] - a[1]; length = Math.sqrt(dx * dx + dy * dy); spent = 0;
+                    while (spent < length - 0.000001 && budget-- > 0) {
+                        var position = at % cycle;
+                        draw = position < previewDash; left = draw ? previewDash - position : cycle - position;
+                        step = Math.min(length - spent, Math.max(0.000001, left));
+                        if (draw) {
+                            from = [a[0] + dx * spent / length, a[1] + dy * spent / length];
+                            to = [a[0] + dx * (spent + step) / length, a[1] + dy * (spent + step) / length];
+                            drawPath([from, to], false); g.strokePath(pen);
+                        }
+                        spent += step; at += step;
+                    }
+                }
+            }
+            for (i = 0; i < parts.length; i++) {
+                if (!parts[i].visible) { continue; }
+                points = lists[i];
+                if (parts[i].fill) { drawPath(points, parts[i].shape.closed); g.fillPath(brush); }
+                if (parts[i].stroke) {
+                    if (i === 0 && p.dashed) { dashedPath(points); }
+                    else {
+                        drawPath(points, parts[i].shape.closed); g.strokePath(pen);
+                        if (i === 0 && p.cap === "round") { roundCap(points[0]); roundCap(points[points.length - 1]); }
+                    }
+                }
+            }
+        };
+        win.onResizing = win.onResize = function () { this.layout.resize(); redraw(); };
+        win.onClose = function () { target = null; dragTarget = null; return true; };
+        tabs.selection = bodyTab;
+        load(state);
+        win.layout.layout(true); win.layout.resize();
+        if (win instanceof Window && (!options || options.show !== false)) { win.center(); win.show(); }
+        return win;
+    }
+    A.UI = { open: open };
+}(Arrow));
