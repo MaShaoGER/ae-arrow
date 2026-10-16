@@ -284,7 +284,7 @@
         function length(a){return Math.sqrt(a[0]*a[0]+a[1]*a[1]);}
         function mix(a,b,t){return add(mul(a,1-t),mul(b,t));}
         function unit(a){var n=length(a);return n>0.000001?mul(a,1/n):[1,0];}
-        function point(c,t){return mix(mix(mix(c[0],c[1],t),mix(c[1],c[2],t),t),mix(mix(c[1],c[2],t),mix(c[2],c[3],t),t),t);}
+        function point(c,t){var u=1-t,a=u*u*u,b=3*u*u*t,d=3*u*t*t,e=t*t*t;return [a*c[0][0]+b*c[1][0]+d*c[2][0]+e*c[3][0],a*c[0][1]+b*c[1][1]+d*c[2][1]+e*c[3][1]];}
         function tangent(c,t){
             var d=add(add(mul(sub(c[1],c[0]),3*(1-t)*(1-t)),mul(sub(c[2],c[1]),6*t*(1-t))),mul(sub(c[3],c[2]),3*t*t));
             if(length(d)<0.000001){d=t<0.5?sub(c[2],c[0]):sub(c[3],c[1]);}
@@ -298,6 +298,11 @@
             var cs=[],table=[{segment:0,t:0,d:0}],total=0,i,j,c,last,p,steps;
             for(i=0;i<vertices.length-1;i++){
                 c=[vertices[i],add(vertices[i],outgoing[i]),add(vertices[i+1],incoming[i+1]),vertices[i+1]];cs.push(c);last=c[0];
+                /* A zero-handle segment is geometrically straight, but its cubic t is
+                   smoothstep rather than distance. Store only its end and invert below. */
+                if(outgoing[i][0]===0&&outgoing[i][1]===0&&incoming[i+1][0]===0&&incoming[i+1][1]===0){
+                    total+=length(sub(c[3],c[0]));table.push({segment:i,t:1,d:total,straight:true});continue;
+                }
                 /* Bound the integration cost per segment; keep original cubics for output. */
                 steps=Math.max(24,Math.min(128,Math.ceil((length(sub(c[1],c[0]))+length(sub(c[2],c[1]))+length(sub(c[3],c[2])))/12)));
                 for(j=1;j<=steps;j++){p=point(c,j/steps);total+=length(sub(p,last));table.push({segment:i,t:j/steps,d:total});last=p;}
@@ -305,10 +310,11 @@
             return {curves:cs,table:table,total:total};
         }
         function at(path,d){
-            var a=path.table,lo=0,hi=a.length-1,m,left,right,t0;
+            var a=path.table,lo=0,hi=a.length-1,m,left,right,t0,f;
             d=Math.max(0,Math.min(path.total,d));if(d<=0){return {segment:0,t:0};}
             while(hi-lo>1){m=Math.floor((lo+hi)/2);if(a[m].d<d){lo=m;}else{hi=m;}}
             left=a[lo];right=a[hi];t0=left.segment===right.segment?left.t:0;
+            if(right.straight&&right.d-left.d>0.000001){f=Math.max(0,Math.min(1,(d-left.d)/(right.d-left.d)));return {segment:right.segment,t:.5-Math.sin(Math.asin(1-2*f)/3)};}
             return {segment:right.segment,t:right.d-left.d<0.000001?right.t:t0+(right.t-t0)*(d-left.d)/(right.d-left.d)};
         }
         function frame(path,fraction){var s=at(path,path.total*fraction),c=path.curves[s.segment];return {point:point(c,s.t),tangent:tangent(c,s.t)};}
@@ -361,7 +367,7 @@
                 [[0,0],mul(n,-half*k),mul(dir,len*k)],
                 [mul(dir,len*k),mul(n,half*k),[0,0]]),retreat:len,depth:len};
         }
-        function affinityGenerate(path,p){
+        function affinityGenerate(path,p,part){
             var s=frame(path,0),e=frame(path,1),sh=Math.max(.001,p.startWidth),eh=Math.max(.001,p.endWidth);
             var sb=p.startProportional?sh:path.total,eb=p.endProportional?eh:path.total;
             var sl=Math.max(.001,sb*p.startLength/100),el=Math.max(.001,eb*p.endLength/100),sv=Math.max(.001,sb*p.startVLength/100),ev=Math.max(.001,eb*p.endVLength/100);
@@ -369,22 +375,25 @@
             var a=affinityHead(p.startType,sl,sh,s.point,mul(s.tangent,-1),p.width,p.startInset/100,p.startThickness/100,sv,si),b=affinityHead(p.endType,el,eh,e.point,e.tangent,p.width,p.endInset/100,p.endThickness/100,ev,ei);
             var sum=a.depth+b.depth,factor=sum>path.total*.8?path.total*.8/Math.max(.001,sum):1;
             if(factor<1){a=affinityHead(p.startType,sl*factor,sh*factor,s.point,mul(s.tangent,-1),p.width,p.startInset/100,p.startThickness/100,sv*factor,si*factor);b=affinityHead(p.endType,el*factor,eh*factor,e.point,e.tangent,p.width,p.endInset/100,p.endThickness/100,ev*factor,ei*factor);}
+            if(part==='start'){return a.shape;}if(part==='end'){return b.shape;}
             var overlap=Math.max(.05,Math.min(.75,p.width*.05)),d0=Math.max(0,a.retreat-overlap),d1=Math.max(d0,path.total-Math.max(0,b.retreat-overlap)),body=trim(path,d0,d1);
             var bridgeA=add(s.point,mul(s.tangent,d0)),bridgeB=add(e.point,mul(e.tangent,-(path.total-d1)));
             if(d0>0&&length(sub(body.vertices[0],bridgeA))>.0001){body.vertices.unshift(bridgeA);body.inTangents.unshift([0,0]);body.outTangents.unshift([0,0]);body.inTangents[1]=[0,0];}
             if(d1<path.total&&length(sub(body.vertices[body.vertices.length-1],bridgeB))>.0001){body.outTangents[body.outTangents.length-1]=[0,0];body.vertices.push(bridgeB);body.inTangents.push([0,0]);body.outTangents.push([0,0]);}
-            return {body:body,start:a.shape,end:b.shape,scale:factor,total:path.total};
+            return part==='body'?body:{body:body,start:a.shape,end:b.shape,scale:factor,total:path.total};
         }
-        function generate(path,p){
-            if(p.affinity){return affinityGenerate(path,p);}
+        function generate(path,p,part){
+            if(p.affinity){return affinityGenerate(path,p,part);}
             var s=frame(path,0),e=frame(path,1),sum=(p.startType?Math.max(p.startLength,p.startDepth||p.startLength):0)+(p.endType?Math.max(p.endLength,p.endDepth||p.endLength):0),factor=sum>path.total*0.8?path.total*0.8/Math.max(0.001,sum):1;
             var sl=p.startLength*factor,el=p.endLength*factor,sw=p.startWidth*factor,ew=p.endWidth*factor,sd=(p.startDepth||p.startLength)*factor,ed=(p.endDepth||p.endLength)*factor;
+            if(part==='start'){return marker(p.startType,sd,sw,p.notch,s.point,mul(s.tangent,-1),p.startType===1||p.startType===2?sl:undefined,p.width);}
+            if(part==='end'){return marker(p.endType,ed,ew,p.notch,e.point,e.tangent,p.endType===1||p.endType===2?el:undefined,p.width);}
             var overlap=Math.max(0.75,p.width*0.125),d0=Math.max(0,retreat(p.startType,p.startType===1||p.startType===2?sl:sd,p.notch)-overlap),d1=Math.max(d0, path.total-Math.max(0,retreat(p.endType,p.endType===1||p.endType===2?el:ed,p.notch)-overlap));
             var body=trim(path,d0,d1),a=add(s.point,mul(s.tangent,d0)),b=add(e.point,mul(e.tangent,-(path.total-d1)));
             /* Tangent-aligned bridges ensure curved shafts actually meet the head, not just its arc distance. */
             if(d0>0&&length(sub(body.vertices[0],a))>0.0001){body.vertices.unshift(a);body.inTangents.unshift([0,0]);body.outTangents.unshift([0,0]);body.inTangents[1]=[0,0];}
             if(d1<path.total&&length(sub(body.vertices[body.vertices.length-1],b))>0.0001){body.outTangents[body.outTangents.length-1]=[0,0];body.vertices.push(b);body.inTangents.push([0,0]);body.outTangents.push([0,0]);}
-            return {body:body,start:marker(p.startType,sd,sw,p.notch,s.point,mul(s.tangent,-1),p.startType===1||p.startType===2?sl:undefined,p.width),end:marker(p.endType,ed,ew,p.notch,e.point,e.tangent,p.endType===1||p.endType===2?el:undefined,p.width),scale:factor,total:path.total};
+            return part==='body'?body:{body:body,start:marker(p.startType,sd,sw,p.notch,s.point,mul(s.tangent,-1),p.startType===1||p.startType===2?sl:undefined,p.width),end:marker(p.endType,ed,ew,p.notch,e.point,e.tangent,p.endType===1||p.endType===2?el:undefined,p.width),scale:factor,total:path.total};
         }
         return {build:build,frame:frame,generate:generate,trim:trim};
     }
@@ -722,23 +731,50 @@
     function effect(layer,key){if(A.Pseudo&&A.Pseudo.find(layer)&&(/Depth$/.test(key)||(A.Pseudo.affinity(layer)&&(/Angle$/.test(key)||key==='notch')))&&names.hasOwnProperty(key)){return {value:A.Pseudo.value(layer,key)};}var p=A.Pseudo?A.Pseudo.property(layer,key):null;if(p){return p;}var result=layer.property("ADBE Effect Parade").property(names[key]||key);if(!result){fail("箭头控制缺失："+key);}return result.property(1);}
     function ref(layer,key,owner){return A.Pseudo&&layer&&A.Pseudo.find(layer)?A.Pseudo.ref(key,owner,layer):(owner?owner+'.':'')+"effect("+quote(names[key])+")(1)";}
     function nativeControls(layer){var mode=info(layer).controls;return mode==="sliders"||mode==="pseudo";}
-    function sourceCoordinates(d,owner){
+    function legacySourceCoordinates(d,owner){
         var lines=["var R="+(owner||"thisLayer")+";","var L=R.effect('AA Source')(1);","var P="+d.path+";","function xy(p){var x=p[0],y=p[1],T,a,s,r,c,z,v;"];
         var i;for(i=0;i<d.groups.length;i++){
             lines.push("T="+d.groups[i]+";a=T.anchorPoint;s=T.scale;r=T.rotation*Math.PI/180;x=(x-a[0])*s[0]/100;y=(y-a[1])*s[1]/100;c=Math.cos(r);z=Math.sin(r);v=x*c-y*z;y=x*z+y*c;x=v+T.position[0];y+=T.position[1];");
         }
         lines.push(d.space==='world'?"var v=R.fromWorld(L.toWorld([x,y,0]));return [v[0],v[1]];}":"var v=R.fromComp(L.toComp([x,y]));return [v[0],v[1]];}");return lines.join("\n");
     }
+    function sourceCoordinates(d,owner){
+        var lines=["var R="+(owner||"thisLayer")+";","var L=R.effect('AA Source')(1);","var P="+d.path+";","var m=[1,0,0,1,0,0],T,a,s,p,r,c,z;"],i;
+        /* Compose shape-group transforms once per evaluation, not for each vertex
+           and tangent. Keep the layer-space conversion native, including legacy
+           comp-space projection when a source has subsequently become 3D. */
+        for(i=0;i<d.groups.length;i++){
+            lines.push("T="+d.groups[i]+";a=T.anchorPoint;s=T.scale;p=T.position;r=T.rotation*Math.PI/180;c=Math.cos(r);z=Math.sin(r);"+
+                "var b0=c*s[0]/100,b1=z*s[0]/100,b2=-z*s[1]/100,b3=c*s[1]/100,b4=p[0]-b0*a[0]-b2*a[1],b5=p[1]-b1*a[0]-b3*a[1];"+
+                "m=[b0*m[0]+b2*m[1],b1*m[0]+b3*m[1],b0*m[2]+b2*m[3],b1*m[2]+b3*m[3],b0*m[4]+b2*m[5]+b4,b1*m[4]+b3*m[5]+b5];");
+        }
+        lines.push("function xy(p){var x=p[0]*m[0]+p[1]*m[2]+m[4],y=p[0]*m[1]+p[1]*m[3]+m[5];"+
+            (d.space==='world'?"var v=R.fromWorld(L.toWorld([x,y,0]));":"var v=R.fromComp(L.toComp([x,y]));")+"return [v[0],v[1]];}");
+        return lines.join("\n");
+    }
+    function pointOverride(d,target){
+        return "try{var C=R.effect('AA Point '+(i+1))(1);if(C&&C.effect('AA Owner')(1).index===R.index){var q;"+
+            "if(C.hasParent&&C.parent.index===R.index){q=C.transform.position;}else{q="+
+            (d.space==='world'?"R.fromWorld(C.toWorld(C.anchorPoint))":"R.fromComp(C.toComp(C.anchorPoint))")+";}"+target+"=[q[0],q[1]];}}catch(missingPoint){}";
+    }
     function sourceHeader(d,owner,baseOnly){
         var lines=[sourceCoordinates(d,owner)];
         lines.push("var vs=P.points(),ins=P.inTangents(),outs=P.outTangents(),v=[],it=[],ot=[],i,a,b,c;",
             "for(i=0;i<vs.length;i++){a=xy(vs[i]);b=xy([vs[i][0]+ins[i][0],vs[i][1]+ins[i][1]]);c=xy([vs[i][0]+outs[i][0],vs[i][1]+outs[i][1]]);v.push(a);it.push([b[0]-a[0],b[1]-a[1]]);ot.push([c[0]-a[0],c[1]-a[1]]);}");
         /* Point frames read ONLY the untouched source. Editable children never feed their own parent. */
-        if(!baseOnly&&d.pointCount){lines.push("for(i=0;i<Math.min(v.length,"+d.pointCount+");i++){try{var C=R.effect('AA Point '+(i+1))(1);if(C&&C.effect('AA Owner')(1).index===R.index){var q="+(d.space==='world'?"R.fromWorld(C.toWorld(C.anchorPoint))":"R.fromComp(C.toComp(C.anchorPoint))")+";v[i]=[q[0],q[1]];}}catch(missingPoint){}}");}
+        if(!baseOnly&&d.pointCount){lines.push("for(i=0;i<Math.min(v.length,"+d.pointCount+");i++){"+pointOverride(d,"v[i]")+"}");}
         lines.push("var M=("+A.LiveMathFactory.toString()+")();var path=M.build(v,it,ot);");
         return lines.join("\n");
     }
     function parameters(layer){var isAffinity=A.Pseudo&&layer&&A.Pseudo.affinity(layer),keys=isAffinity?['width','startType','endType','startLength','startWidth','endLength','endWidth'].concat(affinityKeys):['width','startType','endType','startLength','startWidth','endLength','endWidth','startDepth','endDepth','notch'],parts=isAffinity?['affinity:true']:[],i,k,r;for(i=0;i<keys.length;i++){k=keys[i];r=ref(layer,k,'R');if(k==='startType'||k==='endType'){r='Math.max(0,Math.min('+(isAffinity?10:7)+',Math.round('+r+')))';}else if(k==='notch'){r='Math.max(0,Math.min(.85,'+r+'/100))';}else if(/Proportional$/.test(k)){r='('+r+'>0)';}else if(/Inset$|Thickness$|TailIndent$/.test(k)){r='Math.max(0,Math.min(100,'+r+'))';}else{r='Math.max(.001,'+r+')';}parts.push(k+':'+r);}return 'var p={'+parts.join(',')+'};';}
+    function pathExpression(layer,d,name){
+        var key=name.toLowerCase(),body=sourceHeader(d)+"\n"+parameters(layer)+"\nvar q=M.generate(path,p,"+quote(key)+");createPath(q.vertices,q.inTangents,q.outTangents,q.closed);";
+        if(key==='body'){return body;}
+        var empty=sourceCoordinates(d)+"\nvar vs=P.points(),i="+(key==='start'?"0":"vs.length-1")+",a=xy(vs[i]);";
+        if(d.pointCount){empty+="if(i<"+d.pointCount+"){"+pointOverride(d,"a")+"}";}
+        empty+="createPath([a,a],[[0,0],[0,0]],[[0,0],[0,0]],false);";
+        return "if(Math.round("+ref(layer,key+'Type')+")<=0){\n"+empty+"\n}else{\n"+body+"\n}";
+    }
     function root(layer){return layer.property(ROOT).property("__AE_ARROW_LIVE_V2__");}
     function part(layer,name){return root(layer).property(CONTENTS).property(name).property(CONTENTS);}
     function initialize(layer){
@@ -750,11 +786,11 @@
             c=part(layer,PARTS[i]);c.addProperty(FILL).name="Fill";
         }
     }
-    function expression(prop,text){try{prop.expression=text;}catch(error){fail("表达式安装失败（"+prop.name+" / "+prop.parentProperty.name+"）："+String(error));}if(prop.expressionError){fail("表达式安装失败（"+prop.name+"）："+prop.expressionError);}}
+    function expression(prop,text){try{if(prop.expression!==text||!prop.expressionEnabled){prop.expression=text;}}catch(error){fail("表达式安装失败（"+prop.name+" / "+prop.parentProperty.name+"）："+String(error));}if(prop.expressionError){fail("表达式安装失败（"+prop.name+"）："+prop.expressionError);}}
     function wire(layer,d,rewireOnly){
-        var head=sourceHeader(d)+"\n"+parameters(layer)+"\nvar g=M.generate(path,p);",i,c,s,f,type;
+        var i,c,s,f,type;
         for(i=0;i<PARTS.length;i++){
-            c=part(layer,PARTS[i]);expression(c.property(PATH).property("ADBE Vector Shape"),head+"\nvar q=g."+PARTS[i].toLowerCase()+";createPath(q.vertices,q.inTangents,q.outTangents,q.closed);");
+            c=part(layer,PARTS[i]);expression(c.property(PATH).property("ADBE Vector Shape"),pathExpression(layer,d,PARTS[i]));
             s=c.property(STROKE);f=c.property(FILL);s.property("ADBE Vector Stroke Line Cap").setValue(1);s.property("ADBE Vector Stroke Line Join").setValue(2);
             expression(s.property("ADBE Vector Stroke Color"),ref(layer,'color')+';');expression(f.property("ADBE Vector Fill Color"),ref(layer,'color')+';');
             expression(s.property("ADBE Vector Stroke Width"),'Math.max(.5,'+ref(layer,'width')+');');
@@ -856,7 +892,7 @@
         }
         d.pointCount=Math.max(d.pointCount||0,count);
     }
-    function pointExpression(d,index){return sourceCoordinates(d,"effect('AA Owner')(1)")+"\nvar vs=P.points(),p=xy(vs[Math.min("+index+",vs.length-1)]);[p[0]+value[0],p[1]+value[1]"+(d.space==='world'?",0":"")+"];";}
+    function pointExpression(d,index,legacy){return (legacy?legacySourceCoordinates:sourceCoordinates)(d,"effect('AA Owner')(1)")+"\nvar vs=P.points(),p=xy(vs[Math.min("+index+",vs.length-1)]);[p[0]+value[0],p[1]+value[1]"+(d.space==='world'?",0":"")+"];";}
     function saveInfo(layer,data){layer.comment="[[AE_ARROW_LIVE_V2:"+encodeURIComponent(A.Codec.stringify(data))+"]]";}
     function create(options){
         var source=selectedPath(),layer=null,created=[],sources=[],p=defaults(),key,sourceEnabled=source.layer.enabled,source3D=source.layer.threeDLayer;
@@ -874,7 +910,7 @@
             else{for(key in names){if(names.hasOwnProperty(key)){addEffect(layer,key==="color"?"ADBE Color Control":(key==="dashed"?"ADBE Checkbox Control":"ADBE Slider Control"),names[key],p[key]);}}}
             source.descriptor.pointMode=options&&options.pointMode==='pairs'?'pairs':'single';
             initialize(layer);installSliders(layer);installPoints(layer,source.descriptor,source.property.value.vertices.length,created);organizeEffects(layer);wire(layer,source.descriptor);
-            saveInfo(layer,{tool:"ae-arrow",version:4,mode:"path-live",controls:mode,descriptor:source.descriptor,sourceLayerId:source.layer.id});
+            saveInfo(layer,{tool:"ae-arrow",version:4,mode:"path-live",controls:mode,descriptor:source.descriptor,sourceLayerId:source.layer.id,performanceRevision:1});
             if(!options||options.hideSource!==false){source.layer.enabled=false;}
             selectOnly(source.comp,[layer]);
             return readLayer(layer,source.comp);
@@ -892,6 +928,39 @@
         return {compId:c.id,layerId:layer.id,name:layer.name,params:p,threeD:data.descriptor.space==='world',affinity:!!af,controls:data.controls||"handles",pointMode:data.descriptor.pointMode||'pairs',pointCount:Math.min(data.descriptor.pointCount||0,sourceProperty(layer).value.vertices.length)};}
     function read(){var c=active();if(c.selectedLayers.length!==1){fail("请选择一个实时箭头图层，或它的单个路径点空对象。");}var layer=c.selectedLayers[0],e;if(!TAG.test(layer.comment||"")){e=layer.property("ADBE Effect Parade").property("AA Owner");if(e&&e.property(1).value>0){layer=c.layer(e.property(1).value);}}info(layer);prepareControls(layer);return readLayer(layer,c);}
     function resolve(target){var c=active(),i;if(!target||c.id!==target.compId){fail("请先读取当前合成中的实时箭头。");}for(i=1;i<=c.numLayers;i++){if(c.layer(i).id===target.layerId){info(c.layer(i));return c.layer(i);}}fail("箭头已删除，请重新读取。");}
+    function optimize(target){
+        var layer=resolve(target),data=info(layer),d=data.descriptor,items=[],applied=[],oldComment=layer.comment,i,h,p,text,item;
+        if(layer.locked){fail("箭头图层已锁定。");}
+        for(i=0;i<PARTS.length;i++){
+            p=part(layer,PARTS[i]).property(PATH).property("ADBE Vector Shape");
+            if(p.numKeys){fail("输出路径已有关键帧，保留原结构。");}
+            items.push({prop:p,text:pathExpression(layer,d,PARTS[i])});
+        }
+        /* Position keys are the user's offsets. Replace only a recognized follower
+           expression; never bake, copy, or rewrite those keys or a custom expression. */
+        if(d.pointMode==='single'){
+            for(i=0;i<(d.pointCount||0);i++){
+                h=pointController(layer,i);if(!h){continue;}p=transform(h,"ADBE Position");text=pointExpression(d,i);
+                if(p.expression!==text&&p.expression!==pointExpression(d,i,true)){continue;}
+                if(h.locked&&p.expression!==text){fail("路径点 "+(i+1)+" 已锁定，未更新表达式。");}
+                items.push({prop:p,text:text});
+            }
+        }
+        app.beginUndoGroup("AE Arrow — 更新 / 优化表达式");
+        try{
+            for(i=0;i<items.length;i++){
+                item=items[i];p=item.prop;if(p.expression===item.text){continue;}
+                applied.push({prop:p,text:p.expression,enabled:p.expressionEnabled});
+                expression(p,item.text);
+                if(applied[applied.length-1].enabled===false){p.expressionEnabled=false;}
+            }
+            data.performanceRevision=1;saveInfo(layer,data);
+            return readLayer(layer,layer.containingComp);
+        }catch(error){
+            for(i=applied.length-1;i>=0;i--){try{applied[i].prop.expression=applied[i].text;applied[i].prop.expressionEnabled=applied[i].enabled;}catch(ignoredRestore){}}
+            layer.comment=oldComment;throw error;
+        }finally{app.endUndoGroup();}
+    }
     function set(target,key,value){
         var layer=resolve(target);if(layer.locked){fail("箭头图层已锁定。");}if(!names.hasOwnProperty(key)&&!(A.Pseudo&&A.Pseudo.affinity(layer)&&A.Pseudo.indices.hasOwnProperty(key))){fail("未知参数。");}
         if(A.Pseudo&&A.Pseudo.affinity(layer)&&(/Depth$|Angle$/.test(key)||key==='notch')){fail('新版使用长度 / 大小与按样式调整参数，请在效果控件中编辑。');}
@@ -1000,8 +1069,8 @@
             if(h.locked||!frame||frame.comment!=='[[AE_ARROW_POINT_FRAME:'+layer.id+':'+i+']]'||pos.dimensionsSeparated||pos.expression!==''){
                 fail('路径点 '+(i+1)+' 的父级、位置表达式或维度已修改，保留原结构。');
             }
-            var framePos=transform(frame,'ADBE Position'),expected=sourceCoordinates(data.descriptor,"effect('AA Owner')(1)")+"\nvar vs=P.points(),p=xy(vs[Math.min("+i+",vs.length-1)]);"+(data.descriptor.space==='world'?"[p[0],p[1],0];":"p;"),oldExpected=sourceCoordinates(data.descriptor,"effect('AA Owner')(1)")+"\nvar vs=P.points();xy(vs[Math.min("+i+",vs.length-1)]);",anchor=transform(frame,'ADBE Anchor Point'),scale=transform(frame,'ADBE Scale'),a=anchor.value,s=scale.value,rotation=transform(frame,'ADBE Rotate Z');
-            if(!frame.parent||frame.parent.id!==layer.id||framePos.numKeys||!framePos.expressionEnabled||(framePos.expression!==expected&&framePos.expression!==oldExpected)||anchor.numKeys||anchor.expression!==''||a[0]!==0||a[1]!==0||scale.numKeys||scale.expression!==''||s[0]!==100||s[1]!==100||rotation.value!==0||rotation.numKeys||rotation.expression!==''){
+            var framePos=transform(frame,'ADBE Position'),expected=sourceCoordinates(data.descriptor,"effect('AA Owner')(1)")+"\nvar vs=P.points(),p=xy(vs[Math.min("+i+",vs.length-1)]);"+(data.descriptor.space==='world'?"[p[0],p[1],0];":"p;"),legacyExpected=legacySourceCoordinates(data.descriptor,"effect('AA Owner')(1)")+"\nvar vs=P.points(),p=xy(vs[Math.min("+i+",vs.length-1)]);"+(data.descriptor.space==='world'?"[p[0],p[1],0];":"p;"),oldExpected=legacySourceCoordinates(data.descriptor,"effect('AA Owner')(1)")+"\nvar vs=P.points();xy(vs[Math.min("+i+",vs.length-1)]);",anchor=transform(frame,'ADBE Anchor Point'),scale=transform(frame,'ADBE Scale'),a=anchor.value,s=scale.value,rotation=transform(frame,'ADBE Rotate Z');
+            if(!frame.parent||frame.parent.id!==layer.id||framePos.numKeys||!framePos.expressionEnabled||(framePos.expression!==expected&&framePos.expression!==legacyExpected&&framePos.expression!==oldExpected)||anchor.numKeys||anchor.expression!==''||a[0]!==0||a[1]!==0||scale.numKeys||scale.expression!==''||s[0]!==100||s[1]!==100||rotation.value!==0||rotation.numKeys||rotation.expression!==''){
                 fail('路径点 '+(i+1)+' 的跟随框架已修改，保留原结构。');
             }
             /* Changing parent without compensation preserves the user's offset keys. */
@@ -1029,7 +1098,7 @@
         try{for(i=0;i<props.length;i++){props[i].selected=false;}selectOnly(c,[layer]);prop.selected=true;app.executeCommand(2240);return prop.value;}
         finally{prop.selected=false;selectOnly(c,selected);for(i=0;i<props.length;i++){try{props[i].selected=true;}catch(ignored){}}}
     }
-    A.LiveHost={create:create,read:read,readTarget:function(target){var layer=resolve(target);return readLayer(layer,layer.containingComp);},set:set,setAngle:setAngle,resolve:resolve,showHandles:showHandles,selectHandle:selectHandle,editSource:editSource,sourceLabel:sourceLabel,selectArrow:selectArrow,showPoints:showPoints,syncPoints:syncPoints,upgradeSliders:upgradeSliders,upgradePseudo:upgradePseudo,upgradeAffinity:upgradeAffinity,compactPoints:compactPoints,pickColor:pickColor,defaults:defaults,part:part,sourceHeader:sourceHeader,pointExpression:pointExpression,parameters:parameters,info:info,controller:controller,pointController:pointController,parameter:effect};
+    A.LiveHost={create:create,read:read,readTarget:function(target){var layer=resolve(target);return readLayer(layer,layer.containingComp);},optimize:optimize,set:set,setAngle:setAngle,resolve:resolve,showHandles:showHandles,selectHandle:selectHandle,editSource:editSource,sourceLabel:sourceLabel,selectArrow:selectArrow,showPoints:showPoints,syncPoints:syncPoints,upgradeSliders:upgradeSliders,upgradePseudo:upgradePseudo,upgradeAffinity:upgradeAffinity,compactPoints:compactPoints,pickColor:pickColor,defaults:defaults,part:part,sourceHeader:sourceHeader,pointExpression:pointExpression,pathExpression:pathExpression,parameters:parameters,info:info,controller:controller,pointController:pointController,parameter:effect};
 }(Arrow));
 
 /* Creation/editing only; animatable style controls live in the Effect Controls panel. */
@@ -1044,6 +1113,7 @@
         var nativeButton=win.add('button',undefined,'选择箭头图层');nativeButton.helpTip='选中后按 F3，在效果控件最底部的“◆ 箭头样式 · 在此调整”中编辑。';
         var path=win.add('panel',undefined,'路径');path.orientation='column';path.alignChildren=['fill','top'];path.margins=[10,18,10,10];
         var row=path.add('group'),source=row.add('button',undefined,'编辑源路径'),sync=row.add('button',undefined,'生成 / 补齐路径点');
+        var optimize=path.add('button',undefined,'更新 / 优化表达式');optimize.helpTip='让已有箭头使用新版计算逻辑；更新输出路径表达式及原生点跟随表达式，保留样式与位置关键帧。';
         source.helpTip='直接选中具体路径属性，保留路径关键帧与表达式。在时间线连按 S 显示所选属性，按 X 滚动到图层。';
         var sourceLabel=path.add('statictext',undefined,'',{multiline:true});sourceLabel.preferredSize=[280,32];
         var pointsRow=path.add('group'),points=pointsRow.add('dropdownlist',undefined,['全部路径点']),select=pointsRow.add('button',undefined,'选择空对象');points.preferredSize.width=150;points.selection=0;
@@ -1065,6 +1135,7 @@
         nativeButton.onClick=function(){guard(function(){A.LiveHost.selectArrow(target);status.text='已选中箭头。按 F3 打开效果控件。';});};
         source.onClick=function(){guard(function(){A.LiveHost.editSource(target);status.text='已选中具体路径。时间线连按 S 显示所选属性，按 X 定位图层。';});};
         sync.onClick=function(){guard(function(){load(A.LiveHost.syncPoints(target));A.LiveHost.showPoints(target);status.text='已补齐路径点，已有偏移和动画保留。';});};
+        optimize.onClick=function(){guard(function(){load(A.LiveHost.optimize(target));status.text='已更新表达式；样式、路径点偏移与关键帧保留。';});};
         select.onClick=function(){guard(function(){A.LiveHost.showPoints(target,points.selection.index===0?undefined:points.selection.index-1);status.text='已选中路径点；位置表达式叠加源路径与自身偏移。';});};
         upgrade.onClick=function(){guard(function(){var r=A.LiveHost.readTarget(target);load(r.controls==='handles'?A.LiveHost.upgradeSliders(target):A.LiveHost.upgradePseudo(target));status.text='控件已转换，按 F3 查看。';});};
         compact.onClick=function(){guard(function(){load(A.LiveHost.compactPoints(target));status.text='已合并跟随框架；每个路径点仅一个空对象，偏移关键帧保留。';});};

@@ -10,6 +10,7 @@
         var nativeButton=win.add('button',undefined,'选择箭头图层');nativeButton.helpTip='选中后按 F3，在效果控件最底部的“◆ 箭头样式 · 在此调整”中编辑。';
         var path=win.add('panel',undefined,'路径');path.orientation='column';path.alignChildren=['fill','top'];path.margins=[10,18,10,10];
         var row=path.add('group'),source=row.add('button',undefined,'编辑源路径'),sync=row.add('button',undefined,'生成 / 补齐路径点');
+        var optimize=path.add('button',undefined,'更新 / 优化表达式');optimize.helpTip='让已有箭头使用新版计算逻辑；更新输出路径表达式及原生点跟随表达式，保留样式与位置关键帧。';
         source.helpTip='直接选中具体路径属性，保留路径关键帧与表达式。在时间线连按 S 显示所选属性，按 X 滚动到图层。';
         var sourceLabel=path.add('statictext',undefined,'',{multiline:true});sourceLabel.preferredSize=[280,32];
         var pointsRow=path.add('group'),points=pointsRow.add('dropdownlist',undefined,['全部路径点']),select=pointsRow.add('button',undefined,'选择空对象');points.preferredSize.width=150;points.selection=0;
@@ -31,6 +32,7 @@
         nativeButton.onClick=function(){guard(function(){A.LiveHost.selectArrow(target);status.text='已选中箭头。按 F3 打开效果控件。';});};
         source.onClick=function(){guard(function(){A.LiveHost.editSource(target);status.text='已选中具体路径。时间线连按 S 显示所选属性，按 X 定位图层。';});};
         sync.onClick=function(){guard(function(){load(A.LiveHost.syncPoints(target));A.LiveHost.showPoints(target);status.text='已补齐路径点，已有偏移和动画保留。';});};
+        optimize.onClick=function(){guard(function(){load(A.LiveHost.optimize(target));status.text='已更新表达式；样式、路径点偏移与关键帧保留。';});};
         select.onClick=function(){guard(function(){A.LiveHost.showPoints(target,points.selection.index===0?undefined:points.selection.index-1);status.text='已选中路径点；位置表达式叠加源路径与自身偏移。';});};
         upgrade.onClick=function(){guard(function(){var r=A.LiveHost.readTarget(target);load(r.controls==='handles'?A.LiveHost.upgradeSliders(target):A.LiveHost.upgradePseudo(target));status.text='控件已转换，按 F3 查看。';});};
         compact.onClick=function(){guard(function(){load(A.LiveHost.compactPoints(target));status.text='已合并跟随框架；每个路径点仅一个空对象，偏移关键帧保留。';});};

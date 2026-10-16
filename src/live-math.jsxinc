@@ -7,7 +7,7 @@
         function length(a){return Math.sqrt(a[0]*a[0]+a[1]*a[1]);}
         function mix(a,b,t){return add(mul(a,1-t),mul(b,t));}
         function unit(a){var n=length(a);return n>0.000001?mul(a,1/n):[1,0];}
-        function point(c,t){return mix(mix(mix(c[0],c[1],t),mix(c[1],c[2],t),t),mix(mix(c[1],c[2],t),mix(c[2],c[3],t),t),t);}
+        function point(c,t){var u=1-t,a=u*u*u,b=3*u*u*t,d=3*u*t*t,e=t*t*t;return [a*c[0][0]+b*c[1][0]+d*c[2][0]+e*c[3][0],a*c[0][1]+b*c[1][1]+d*c[2][1]+e*c[3][1]];}
         function tangent(c,t){
             var d=add(add(mul(sub(c[1],c[0]),3*(1-t)*(1-t)),mul(sub(c[2],c[1]),6*t*(1-t))),mul(sub(c[3],c[2]),3*t*t));
             if(length(d)<0.000001){d=t<0.5?sub(c[2],c[0]):sub(c[3],c[1]);}
@@ -21,6 +21,11 @@
             var cs=[],table=[{segment:0,t:0,d:0}],total=0,i,j,c,last,p,steps;
             for(i=0;i<vertices.length-1;i++){
                 c=[vertices[i],add(vertices[i],outgoing[i]),add(vertices[i+1],incoming[i+1]),vertices[i+1]];cs.push(c);last=c[0];
+                /* A zero-handle segment is geometrically straight, but its cubic t is
+                   smoothstep rather than distance. Store only its end and invert below. */
+                if(outgoing[i][0]===0&&outgoing[i][1]===0&&incoming[i+1][0]===0&&incoming[i+1][1]===0){
+                    total+=length(sub(c[3],c[0]));table.push({segment:i,t:1,d:total,straight:true});continue;
+                }
                 /* Bound the integration cost per segment; keep original cubics for output. */
                 steps=Math.max(24,Math.min(128,Math.ceil((length(sub(c[1],c[0]))+length(sub(c[2],c[1]))+length(sub(c[3],c[2])))/12)));
                 for(j=1;j<=steps;j++){p=point(c,j/steps);total+=length(sub(p,last));table.push({segment:i,t:j/steps,d:total});last=p;}
@@ -28,10 +33,11 @@
             return {curves:cs,table:table,total:total};
         }
         function at(path,d){
-            var a=path.table,lo=0,hi=a.length-1,m,left,right,t0;
+            var a=path.table,lo=0,hi=a.length-1,m,left,right,t0,f;
             d=Math.max(0,Math.min(path.total,d));if(d<=0){return {segment:0,t:0};}
             while(hi-lo>1){m=Math.floor((lo+hi)/2);if(a[m].d<d){lo=m;}else{hi=m;}}
             left=a[lo];right=a[hi];t0=left.segment===right.segment?left.t:0;
+            if(right.straight&&right.d-left.d>0.000001){f=Math.max(0,Math.min(1,(d-left.d)/(right.d-left.d)));return {segment:right.segment,t:.5-Math.sin(Math.asin(1-2*f)/3)};}
             return {segment:right.segment,t:right.d-left.d<0.000001?right.t:t0+(right.t-t0)*(d-left.d)/(right.d-left.d)};
         }
         function frame(path,fraction){var s=at(path,path.total*fraction),c=path.curves[s.segment];return {point:point(c,s.t),tangent:tangent(c,s.t)};}
@@ -84,7 +90,7 @@
                 [[0,0],mul(n,-half*k),mul(dir,len*k)],
                 [mul(dir,len*k),mul(n,half*k),[0,0]]),retreat:len,depth:len};
         }
-        function affinityGenerate(path,p){
+        function affinityGenerate(path,p,part){
             var s=frame(path,0),e=frame(path,1),sh=Math.max(.001,p.startWidth),eh=Math.max(.001,p.endWidth);
             var sb=p.startProportional?sh:path.total,eb=p.endProportional?eh:path.total;
             var sl=Math.max(.001,sb*p.startLength/100),el=Math.max(.001,eb*p.endLength/100),sv=Math.max(.001,sb*p.startVLength/100),ev=Math.max(.001,eb*p.endVLength/100);
@@ -92,22 +98,25 @@
             var a=affinityHead(p.startType,sl,sh,s.point,mul(s.tangent,-1),p.width,p.startInset/100,p.startThickness/100,sv,si),b=affinityHead(p.endType,el,eh,e.point,e.tangent,p.width,p.endInset/100,p.endThickness/100,ev,ei);
             var sum=a.depth+b.depth,factor=sum>path.total*.8?path.total*.8/Math.max(.001,sum):1;
             if(factor<1){a=affinityHead(p.startType,sl*factor,sh*factor,s.point,mul(s.tangent,-1),p.width,p.startInset/100,p.startThickness/100,sv*factor,si*factor);b=affinityHead(p.endType,el*factor,eh*factor,e.point,e.tangent,p.width,p.endInset/100,p.endThickness/100,ev*factor,ei*factor);}
+            if(part==='start'){return a.shape;}if(part==='end'){return b.shape;}
             var overlap=Math.max(.05,Math.min(.75,p.width*.05)),d0=Math.max(0,a.retreat-overlap),d1=Math.max(d0,path.total-Math.max(0,b.retreat-overlap)),body=trim(path,d0,d1);
             var bridgeA=add(s.point,mul(s.tangent,d0)),bridgeB=add(e.point,mul(e.tangent,-(path.total-d1)));
             if(d0>0&&length(sub(body.vertices[0],bridgeA))>.0001){body.vertices.unshift(bridgeA);body.inTangents.unshift([0,0]);body.outTangents.unshift([0,0]);body.inTangents[1]=[0,0];}
             if(d1<path.total&&length(sub(body.vertices[body.vertices.length-1],bridgeB))>.0001){body.outTangents[body.outTangents.length-1]=[0,0];body.vertices.push(bridgeB);body.inTangents.push([0,0]);body.outTangents.push([0,0]);}
-            return {body:body,start:a.shape,end:b.shape,scale:factor,total:path.total};
+            return part==='body'?body:{body:body,start:a.shape,end:b.shape,scale:factor,total:path.total};
         }
-        function generate(path,p){
-            if(p.affinity){return affinityGenerate(path,p);}
+        function generate(path,p,part){
+            if(p.affinity){return affinityGenerate(path,p,part);}
             var s=frame(path,0),e=frame(path,1),sum=(p.startType?Math.max(p.startLength,p.startDepth||p.startLength):0)+(p.endType?Math.max(p.endLength,p.endDepth||p.endLength):0),factor=sum>path.total*0.8?path.total*0.8/Math.max(0.001,sum):1;
             var sl=p.startLength*factor,el=p.endLength*factor,sw=p.startWidth*factor,ew=p.endWidth*factor,sd=(p.startDepth||p.startLength)*factor,ed=(p.endDepth||p.endLength)*factor;
+            if(part==='start'){return marker(p.startType,sd,sw,p.notch,s.point,mul(s.tangent,-1),p.startType===1||p.startType===2?sl:undefined,p.width);}
+            if(part==='end'){return marker(p.endType,ed,ew,p.notch,e.point,e.tangent,p.endType===1||p.endType===2?el:undefined,p.width);}
             var overlap=Math.max(0.75,p.width*0.125),d0=Math.max(0,retreat(p.startType,p.startType===1||p.startType===2?sl:sd,p.notch)-overlap),d1=Math.max(d0, path.total-Math.max(0,retreat(p.endType,p.endType===1||p.endType===2?el:ed,p.notch)-overlap));
             var body=trim(path,d0,d1),a=add(s.point,mul(s.tangent,d0)),b=add(e.point,mul(e.tangent,-(path.total-d1)));
             /* Tangent-aligned bridges ensure curved shafts actually meet the head, not just its arc distance. */
             if(d0>0&&length(sub(body.vertices[0],a))>0.0001){body.vertices.unshift(a);body.inTangents.unshift([0,0]);body.outTangents.unshift([0,0]);body.inTangents[1]=[0,0];}
             if(d1<path.total&&length(sub(body.vertices[body.vertices.length-1],b))>0.0001){body.outTangents[body.outTangents.length-1]=[0,0];body.vertices.push(b);body.inTangents.push([0,0]);body.outTangents.push([0,0]);}
-            return {body:body,start:marker(p.startType,sd,sw,p.notch,s.point,mul(s.tangent,-1),p.startType===1||p.startType===2?sl:undefined,p.width),end:marker(p.endType,ed,ew,p.notch,e.point,e.tangent,p.endType===1||p.endType===2?el:undefined,p.width),scale:factor,total:path.total};
+            return part==='body'?body:{body:body,start:marker(p.startType,sd,sw,p.notch,s.point,mul(s.tangent,-1),p.startType===1||p.startType===2?sl:undefined,p.width),end:marker(p.endType,ed,ew,p.notch,e.point,e.tangent,p.endType===1||p.endType===2?el:undefined,p.width),scale:factor,total:path.total};
         }
         return {build:build,frame:frame,generate:generate,trim:trim};
     }
